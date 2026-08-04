@@ -48,14 +48,14 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertNotIn("enableCORS", run_command)
         self.assertNotIn("enableXsrfProtection", run_command)
 
-    def test_streamlit_config_keeps_cors_and_xsrf_enabled(self):
+    def test_streamlit_config_is_headless_and_keeps_web_protection(self):
         config = tomllib.loads(
             (PROJECT_ROOT / ".streamlit" / "config.toml").read_text(
                 encoding="utf-8"
             )
         )
         server = config["server"]
-        self.assertFalse(server["headless"])
+        self.assertTrue(server["headless"])
         self.assertEqual(server["port"], 8501)
         self.assertTrue(server["enableCORS"])
         self.assertTrue(server["enableXsrfProtection"])
