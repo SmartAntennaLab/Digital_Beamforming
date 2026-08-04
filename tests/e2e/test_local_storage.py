@@ -33,7 +33,7 @@ def _unused_local_port() -> int:
 
 @unittest.skipUnless(
     RUN_E2E and sync_playwright is not None,
-    "Set RUN_E2E=1 and install requirements-e2e.txt to run browser tests.",
+    "Set RUN_E2E=1 after running `uv sync --frozen --extra e2e`.",
 )
 class DeviceLocalStorageE2ETests(unittest.TestCase):
     @classmethod
@@ -86,7 +86,10 @@ class DeviceLocalStorageE2ETests(unittest.TestCase):
             server.wait(timeout=5.0)
 
     def _expect_frequency(self, page, value: float) -> None:
-        slider = page.get_by_role("slider", name="주파수 (GHz)")
+        # Streamlit can briefly retain a stale widget tree while a rerun commits.
+        # The last matching slider belongs to the newest rendered tree.
+        slider = page.get_by_role("slider", name="주파수 (GHz)").last
+        expect(slider).to_be_visible(timeout=20_000)
         expect(slider).to_have_value(f"{value:g}", timeout=20_000)
 
     def test_save_new_session_and_refresh_restore_local_settings(self) -> None:

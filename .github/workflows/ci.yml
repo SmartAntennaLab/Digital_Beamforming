@@ -7,39 +7,54 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"
+  UV_VERSION: "0.11.29"
+
 jobs:
   unit-tests:
-    name: Python ${{ matrix.python-version }} unit tests
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }} unit tests
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+      - name: Install uv
+        run: python -m pip install uv==${{ env.UV_VERSION }}
+      - name: Sync locked runtime dependencies
+        run: uv sync --frozen --python ${{ matrix.python-version }}
+      - name: Verify lock and environment
+        run: |
+          uv lock --check
+          uv pip check
       - name: Run unit tests
-        run: python -m unittest discover -s tests -t . -v
+        run: uv run --frozen --no-sync python -m unittest discover -s tests -t . -v
+
+  dependency-health:
+    name: Locked dependency health
+    uses: ./.github/workflows/dependency-health.yml
 
   browser-storage-e2e:
     name: Browser localStorage E2E
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-          cache: pip
-      - name: Install test dependencies
-        run: python -m pip install -r requirements-e2e.txt
+      - name: Install uv
+        run: python -m pip install uv==${{ env.UV_VERSION }}
+      - name: Sync locked E2E dependencies
+        run: uv sync --frozen --extra e2e --python 3.11
       - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
+        run: uv run --frozen --no-sync python -m playwright install --with-deps chromium
       - name: Run browser test
         env:
           RUN_E2E: "1"
-        run: python -m unittest discover -s tests/e2e -t . -v
+        run: uv run --frozen --no-sync python -m unittest discover -s tests/e2e -t . -v

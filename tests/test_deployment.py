@@ -8,21 +8,62 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeploymentConfigurationTests(unittest.TestCase):
-    def test_direct_dependencies_are_pinned_once(self):
-        requirements = (
-            PROJECT_ROOT / "requirements.txt"
-        ).read_text(encoding="utf-8").splitlines()
+    def test_project_dependencies_are_pinned_and_grouped(self):
+        project = tomllib.loads(
+            (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]
+        self.assertEqual(project["requires-python"], ">=3.11,<3.15")
         self.assertEqual(
-            requirements,
+            project["dependencies"],
             [
-                "streamlit==1.60.0",
                 "numpy==2.3.5",
-                "plotly==6.9.0",
                 "pandas==2.3.3",
+                "plotly==6.9.0",
+                "streamlit==1.60.0",
             ],
         )
+        self.assertEqual(
+            project["optional-dependencies"],
+            {
+                "dev": [
+                    "pip==26.2",
+                    "pip-audit==2.10.1",
+                    "pip-licenses==5.5.5",
+                ],
+                "e2e": ["playwright==1.61.0"],
+            },
+        )
+        self.assertFalse((PROJECT_ROOT / "requirements.txt").exists())
+        self.assertFalse((PROJECT_ROOT / "requirements-e2e.txt").exists())
 
-    def test_devcontainer_installs_only_from_requirements(self):
+    def test_uv_lock_is_universal_and_hashes_registry_artifacts(self):
+        lock = tomllib.loads(
+            (PROJECT_ROOT / "uv.lock").read_text(encoding="utf-8")
+        )
+        self.assertEqual(lock["requires-python"], ">=3.11, <3.15")
+        packages = lock["package"]
+        project = next(
+            package
+            for package in packages
+            if package["name"] == "digital-beamforming-simulator"
+        )
+        self.assertEqual(project["version"], "1.4.0")
+        self.assertEqual(
+            set(project["optional-dependencies"]), {"dev", "e2e"}
+        )
+        for package in packages:
+            if "registry" not in package.get("source", {}):
+                continue
+            artifacts = ([package["sdist"]] if "sdist" in package else []) + package.get(
+                "wheels", []
+            )
+            self.assertTrue(artifacts, package["name"])
+            self.assertTrue(
+                all(artifact["hash"].startswith("sha256:") for artifact in artifacts),
+                package["name"],
+            )
+
+    def test_devcontainer_syncs_only_from_the_frozen_lock(self):
         config = json.loads(
             (PROJECT_ROOT / ".devcontainer" / "devcontainer.json").read_text(
                 encoding="utf-8"
@@ -30,9 +71,11 @@ class DeploymentConfigurationTests(unittest.TestCase):
         )
         self.assertNotIn("updateContentCommand", config)
         install_command = config["postCreateCommand"]
-        self.assertEqual(install_command.count("install -r requirements.txt"), 1)
+        self.assertEqual(install_command.count("uv sync --frozen"), 1)
+        self.assertIn("uv==0.11.29", install_command)
+        self.assertIn("--extra dev", install_command)
+        self.assertNotIn("requirements.txt", install_command)
         self.assertNotIn("install --user", install_command)
-        self.assertNotIn("install streamlit", install_command)
 
     def test_devcontainer_does_not_disable_web_protection(self):
         config = json.loads(
@@ -43,7 +86,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
         run_command = config["postAttachCommand"]["server"]
         self.assertEqual(
             run_command,
-            "python -m streamlit run main.py --server.headless=true",
+            "uv run --frozen --no-sync streamlit run main.py --server.headless=true",
         )
         self.assertNotIn("enableCORS", run_command)
         self.assertNotIn("enableXsrfProtection", run_command)
@@ -59,6 +102,38 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertEqual(server["port"], 8501)
         self.assertTrue(server["enableCORS"])
         self.assertTrue(server["enableXsrfProtection"])
+
+    def test_ci_covers_locked_cross_platform_and_dependency_health(self):
+        ci = (PROJECT_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        dependency_health = (
+            PROJECT_ROOT / ".github" / "workflows" / "dependency-health.yml"
+        ).read_text(encoding="utf-8")
+        dependabot = (PROJECT_ROOT / ".github" / "dependabot.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("ubuntu-latest", ci)
+        self.assertIn("windows-latest", ci)
+        self.assertIn('python-version: ["3.11", "3.14"]', ci)
+        self.assertIn("uv sync --frozen", ci)
+        self.assertIn("uv pip check", ci)
+        self.assertIn("dependency-health.yml", ci)
+
+        self.assertIn("schedule:", dependency_health)
+        self.assertIn("--all-extras", dependency_health)
+        self.assertIn("python -m pip check", dependency_health)
+        self.assertIn("python -m pip_audit", dependency_health)
+        self.assertIn("python -m piplicenses", dependency_health)
+        self.assertIn('GPL;AGPL;UNKNOWN', dependency_health)
+        combined_workflows = ci + dependency_health
+        self.assertNotIn("actions/checkout@v", combined_workflows)
+        self.assertNotIn("actions/setup-python@v", combined_workflows)
+
+        self.assertIn('package-ecosystem: "uv"', dependabot)
+        self.assertIn('package-ecosystem: "github-actions"', dependabot)
+        self.assertIn('interval: "weekly"', dependabot)
 
 
 if __name__ == "__main__":

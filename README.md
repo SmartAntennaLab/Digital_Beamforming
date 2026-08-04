@@ -31,7 +31,7 @@ ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 �
 | 지원 Python | CPython 3.11, 3.12, 3.13, 3.14 |
 | 지원 운영체제 | Windows, macOS, Linux |
 | Streamlit | 1.60.0 |
-| 패키지 설치 기준 | 루트의 `requirements.txt` |
+| 패키지 설치 기준 | `pyproject.toml` + 범용 `uv.lock` |
 
 Streamlit 1.60 자체는 Python 3.10–3.14를 지원하지만, 이 프로젝트는 고정한 NumPy 버전과 Dev Container 기준을 고려해 Python 3.11부터 지원합니다. Python 3.10 이하와 3.15 이상, PyPy는 지원·회귀 검증 범위에 포함하지 않습니다.
 
@@ -44,36 +44,40 @@ Streamlit 1.60 자체는 Python 3.10–3.14를 지원하지만, 이 프로젝트
 | Plotly | 6.9.0 | 2D/3D 대화형 시각화 |
 | pandas | 2.3.3 | CSV 내보내기 데이터 구성 |
 
+`pyproject.toml`은 Python 범위를 `>=3.11,<3.15`로 제한하고 의존성을 세 그룹으로 분리합니다.
+
+| 그룹 | 설치 대상 |
+|---|---|
+| 기본 런타임 | Streamlit, NumPy, Plotly, pandas |
+| `dev` extra | pip, pip-audit, pip-licenses |
+| `e2e` extra | Playwright |
+
+`uv.lock`은 위 직접 의존성과 모든 전이 의존성의 정확한 버전, 운영체제·Python 마커, 배포 파일 SHA-256을 함께 기록하는 단일 잠금 소스입니다. 수동으로 편집하지 말고 `uv lock`으로만 갱신합니다. 이 프로젝트가 검증한 uv 버전은 **0.11.29**입니다.
+
 ## 정확한 로컬 설치 절차
 
 가상환경 활성화 여부에 따라 다른 Python이 실행되는 일을 피하기 위해 아래 명령은 가상환경의 Python을 직접 호출합니다. 모든 명령은 저장소 루트에서 실행하십시오.
 
 ### Windows PowerShell
 
-Python 3.11이 설치된 경우:
+Python 3.11이 설치된 새 환경에서:
 
 ```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m pip check
-.\.venv\Scripts\python.exe -m streamlit run main.py
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.11.29/install.ps1 | iex"
+# PowerShell을 다시 연 뒤 저장소 루트에서 실행
+uv sync --frozen --python 3.11
+uv run --frozen --no-sync streamlit run main.py
 ```
 
-`py` 실행기가 없다면 첫 줄을 지원 범위의 Python 실행 파일로 바꿉니다.
-
-```powershell
-python -m venv .venv
-```
+uv 0.11.29가 이미 설치되어 있다면 첫 명령은 생략합니다. uv는 지원 범위의 Python을 찾지 못하면 호환되는 CPython을 내려받을 수 있습니다.
 
 ### macOS/Linux
 
 ```bash
-python3.11 -m venv .venv
-./.venv/bin/python -m pip install --upgrade pip
-./.venv/bin/python -m pip install -r requirements.txt
-./.venv/bin/python -m pip check
-./.venv/bin/python -m streamlit run main.py
+curl -LsSf https://astral.sh/uv/0.11.29/install.sh | sh
+# 셸을 다시 연 뒤 저장소 루트에서 실행
+uv sync --frozen --python 3.11
+uv run --frozen --no-sync streamlit run main.py
 ```
 
 정상 실행되면 <http://localhost:8501>에 접속합니다. 서버는 실행 터미널에서 `Ctrl+C`로 종료합니다.
@@ -81,12 +85,13 @@ python3.11 -m venv .venv
 설치 버전은 다음 명령으로 확인할 수 있습니다.
 
 ```powershell
-.\.venv\Scripts\python.exe --version
-.\.venv\Scripts\python.exe -m streamlit version
-.\.venv\Scripts\python.exe -m pip list
+uv --version
+uv lock --check
+uv pip check
+uv tree --frozen
 ```
 
-기존 가상환경에서 패키지 충돌이 계속되면 `.venv`를 삭제한 뒤 위 절차로 새로 만드는 것이 가장 확실합니다. 다른 프로젝트가 사용하는 전역 Python 환경에는 이 요구사항을 직접 설치하지 마십시오.
+`uv sync`는 `.venv`를 생성하고 잠금 파일과 정확히 일치하도록 동기화합니다. 기존 가상환경에서 패키지 충돌이 계속되면 `.venv`를 삭제한 뒤 다시 동기화하십시오. 애플리케이션 패키지는 다른 프로젝트가 사용하는 전역 Python 환경에 설치하지 않습니다.
 
 ## VS Code Dev Container
 
@@ -95,26 +100,26 @@ python3.11 -m venv .venv
 Dev Container는 다음 순서로 동작합니다.
 
 1. Python 3.11 Debian 12 이미지를 생성합니다.
-2. `postCreateCommand`가 `requirements.txt`를 정확히 한 번 설치하고 `pip check`를 실행합니다.
-3. 컨테이너에 연결되면 `python -m streamlit run main.py --server.headless=true`를 실행합니다.
+2. `postCreateCommand`가 uv 0.11.29를 설치하고 `uv.lock`의 런타임과 `dev` extra를 `--frozen`으로 동기화한 뒤 `pip check`를 실행합니다.
+3. 컨테이너에 연결되면 `uv run --frozen --no-sync streamlit run main.py --server.headless=true`를 실행합니다.
 4. 8501 포트를 전달하고 VS Code 미리 보기를 엽니다.
 
-이전 설정에 있던 별도의 `pip install streamlit`은 제거했습니다. Streamlit은 다른 패키지와 마찬가지로 `requirements.txt`에서 한 번만 설치됩니다. OS 패키지 목록이 없는 상태에서 매번 수행하던 `apt update`, `apt upgrade`도 제거했습니다.
+Streamlit을 별도로 설치하거나 잠금 파일 밖에서 패키지를 추가하지 않습니다. OS 패키지 목록이 없는 상태에서 매번 수행하던 `apt update`, `apt upgrade`도 사용하지 않습니다.
 
 ## 실행과 테스트
 
 Windows:
 
 ```powershell
-.\.venv\Scripts\python.exe -m streamlit run main.py
-.\.venv\Scripts\python.exe -m unittest discover -s tests -t . -v
+uv run --frozen --no-sync streamlit run main.py
+uv run --frozen --no-sync python -m unittest discover -s tests -t . -v
 ```
 
 macOS/Linux:
 
 ```bash
-./.venv/bin/python -m streamlit run main.py
-./.venv/bin/python -m unittest discover -s tests -t . -v
+uv run --frozen --no-sync streamlit run main.py
+uv run --frozen --no-sync python -m unittest discover -s tests -t . -v
 ```
 
 테스트는 UHA 좌표·실제 소자 마스크, 수학 회귀, 형상 정합성, null 조향, 청크 계산, 대규모 배열, 동적 탭과 fragment 자동 스캔을 포함합니다.
@@ -122,13 +127,25 @@ macOS/Linux:
 실제 JavaScript `localStorage` 저장·새 세션 복원·새로고침을 검증하려면 별도 브라우저 의존성을 설치합니다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-e2e.txt
-.\.venv\Scripts\python.exe -m playwright install chromium
+uv sync --frozen --extra e2e
+uv run --frozen --no-sync python -m playwright install chromium
 $env:RUN_E2E = "1"
-.\.venv\Scripts\python.exe -m unittest tests.e2e.test_local_storage -v
+uv run --frozen --no-sync python -m unittest tests.e2e.test_local_storage -v
 ```
 
-일반 단위 테스트에서는 이 E2E가 자동으로 skip됩니다. GitHub Actions는 Python 3.11·3.14 단위 테스트 매트릭스와 Python 3.11 Chromium E2E를 각각 실행합니다.
+일반 단위 테스트에서는 이 E2E가 자동으로 skip됩니다. GitHub Actions는 Windows와 Linux에서 Python 3.11·3.14 잠금 설치 및 단위 테스트를 실행하고, Linux Python 3.11에서 Chromium E2E를 실행합니다.
+
+개발·E2E 도구를 포함한 전체 잠금 집합을 검사하려면 다음 명령을 사용합니다.
+
+```powershell
+uv sync --frozen --all-extras
+uv run --frozen --no-sync python -m pip check
+uv run --frozen --no-sync python -m pip_audit --local --strict --progress-spinner off
+$env:PYTHONUTF8 = "1"
+uv run --frozen --no-sync python -m piplicenses --format=markdown --with-authors --with-urls --fail-on "GPL;AGPL;UNKNOWN" --partial-match
+```
+
+CI는 모든 알려진 취약점에서 실패하므로 고위험 취약점 0개보다 엄격합니다. 라이선스 검사는 GPL·AGPL 또는 알 수 없는 라이선스가 검출되면 실패합니다. `dependency-health.yml`이 매주 화요일 02:17(KST)에 같은 검사를 다시 실행하고, Dependabot이 매주 uv 및 GitHub Actions 갱신 PR을 생성합니다.
 
 `설정 적용 및 계산`을 누르면 주요 안테나·조향·시각화·스캔 입력이 브라우저 `localStorage`의 `digital_beamforming.settings.v1` 항목에 저장됩니다. 서버나 다른 장치로 전송하지 않으므로 같은 서버에 접속해도 PC와 휴대폰은 각자 마지막 값을 복원합니다. `공유 링크 생성`을 눌렀을 때만 검증된 설정이 URL의 단일 `settings` 파라미터로 추가되며, 공유 URL은 해당 브라우저의 저장값보다 우선합니다. 공유 링크로 연 설정에서 `설정 적용 및 계산`을 누르면 그 장치에 저장하고 주소의 공유 파라미터를 제거합니다. `저장 설정 초기화`는 현재 브라우저의 저장값과 공유 URL을 지웁니다. 자동 스캔의 실행 여부와 현재 프레임은 일시적인 상태이므로 저장하지 않습니다.
 
@@ -139,9 +156,12 @@ $env:RUN_E2E = "1"
 ```text
 Digital_Beamforming/
 ├── .devcontainer/
-│   └── devcontainer.json      # Python 3.11 컨테이너, 단일 패키지 설치, 앱 실행
-├── .github/workflows/
-│   └── ci.yml                 # Python 3.11/3.14 및 Chromium E2E CI
+│   └── devcontainer.json      # Python 3.11 컨테이너, frozen 잠금 동기화, 앱 실행
+├── .github/
+│   ├── dependabot.yml         # 주간 uv·GitHub Actions 갱신 PR
+│   └── workflows/
+│       ├── ci.yml             # Windows/Linux, Python 3.11/3.14, Chromium E2E
+│       └── dependency-health.yml # 정기 취약점·라이선스 검사
 ├── .streamlit/
 │   └── config.toml            # 서버 포트와 CORS/XSRF 보호 설정
 ├── tests/
@@ -169,8 +189,8 @@ Digital_Beamforming/
 ├── ui_formatters.py           # N/A·단위·진단 표시 형식
 ├── ui_renderers.py            # 패턴·지표·소자 Plotly/Streamlit 렌더러
 ├── main.py                    # 앱 조립·동적 탭·fragment 진입점
-├── requirements.txt           # 직접 의존성 고정 버전
-├── requirements-e2e.txt       # Playwright 1.61.0 브라우저 테스트
+├── pyproject.toml             # Python 범위와 런타임·dev·E2E 직접 의존성
+├── uv.lock                    # 전이 의존성 버전·플랫폼 마커·SHA-256 잠금
 ├── README.md                  # 기준 설치·모델·배포 문서
 └── ReadMe.txt                 # README.md로 안내하는 이전 파일명 호환 문서
 ```
@@ -305,14 +325,14 @@ enableXsrfProtection = true
 
 ## Streamlit Community Cloud 배포
 
-1. GitHub 저장소에 `main.py`, `requirements.txt`, `.streamlit/config.toml`을 포함해 push합니다.
+1. GitHub 저장소에 `main.py`, `pyproject.toml`, `uv.lock`, `.streamlit/config.toml`을 포함해 push합니다.
 2. Streamlit Community Cloud에서 새 앱을 만들고 저장소와 `main` 브랜치를 선택합니다.
 3. 엔트리포인트를 `main.py`로 지정합니다.
 4. Advanced settings에서 Python **3.11**을 선택합니다.
 5. 이 앱은 비밀값을 요구하지 않으므로 Secrets 입력은 비워 둡니다.
-6. 배포 후 로그에서 네 개의 고정 직접 의존성이 설치됐는지 확인합니다.
+6. 배포 로그에서 `uv.lock`이 감지되고 잠긴 의존성이 설치됐는지 확인합니다.
 
-Community Cloud는 `requirements.txt`를 자동 설치하므로 별도 `pip install streamlit` 명령이 필요하지 않습니다. Python 버전은 배포 후 제자리에서 변경할 수 없으므로 바꾸려면 앱을 다시 배포해야 합니다.
+Community Cloud는 `uv.lock`과 `pyproject.toml`을 사용해 기본 런타임 그룹만 설치합니다. 별도 `pip install streamlit` 명령은 필요하지 않습니다. Python 버전은 배포 후 제자리에서 변경할 수 없으므로 바꾸려면 앱을 다시 배포해야 합니다.
 
 공개 데모: <https://digitalbeamforming-zcmwsx6pp54mpfpzcnoygw.streamlit.app/>
 
@@ -336,4 +356,7 @@ Community Cloud는 `requirements.txt`를 자동 설치하므로 별도 `pip inst
 - [Streamlit 명령줄 설치](https://docs.streamlit.io/get-started/installation/command-line)
 - [Streamlit 서버 설정](https://docs.streamlit.io/develop/api-reference/configuration/config.toml)
 - [Streamlit Community Cloud 배포](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy)
+- [uv 프로젝트 잠금과 동기화](https://docs.astral.sh/uv/concepts/projects/sync/)
+- [pip-audit](https://pypi.org/project/pip-audit/)
+- [Dependabot 지원 패키지 생태계](https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories)
 - [MathWorks Phased Array Gallery — Uniform Hexagonal Array](https://www.mathworks.com/help/phased/ug/phased-array-gallery.html)
