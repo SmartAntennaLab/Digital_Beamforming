@@ -772,7 +772,8 @@ def compute_beamforming_weights(
         smallest_singular = float(singular_values[-1]) if singular_values.size else 0.0
         condition_number = (
             float(largest_singular / smallest_singular)
-            if smallest_singular > 0.0
+            if constraint_rank == constraint_count
+            and smallest_singular > rank_threshold
             else float("inf")
         )
         gram_matrix = control_matrix @ control_matrix.conjugate().T
