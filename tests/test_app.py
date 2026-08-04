@@ -24,31 +24,92 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(len(self.app.get("plotly_chart")), 0)
         self.assertEqual(len(self.app.metric), 10)
         self.assertEqual(len(self.app.download_button), 2)
+        performance_metrics = {
+            item.label: item.value for item in self.app.metric
+        }
+        self.assertIn("상대 배열 이득", performance_metrics)
+        self.assertTrue(performance_metrics["상대 배열 이득"].endswith(" dB"))
+        self.assertNotIn("dBi", performance_metrics["상대 배열 이득"])
 
         self.app.session_state["active_result_tab"] = "🔴 안테나 배치 및 위상"
         self.app.run()
         self.assertEqual(list(self.app.exception), [])
         self.assertEqual(len(self.app.get("plotly_chart")), 1)
-        self.assertEqual(len(self.app.metric), 7)
+        self.assertEqual(len(self.app.metric), 9)
         layout_metrics = {item.label: item.value for item in self.app.metric}
         self.assertEqual(layout_metrics["전체 소자 수"], "16개")
         self.assertEqual(layout_metrics["활성 소자 수"], "16개")
         self.assertEqual(layout_metrics["결함 소자 수"], "0개")
+        self.assertEqual(layout_metrics["요청 결함률"], "0.00%")
+        self.assertEqual(layout_metrics["실제 결함률"], "0.00%")
         self.assertEqual(
             layout_metrics["수평 소자 간격"],
-            "0.500 λ / 0.536 cm",
+            "0.500 λ / 0.535 cm",
         )
         self.assertEqual(
             layout_metrics["수직 소자 간격"],
-            "0.500 λ / 0.536 cm",
+            "0.500 λ / 0.535 cm",
         )
         self.assertEqual(
             layout_metrics["전체 수평 길이"],
-            "1.500 λ / 1.607 cm",
+            "1.500 λ / 1.606 cm",
         )
         self.assertEqual(
             layout_metrics["전체 수직 길이"],
-            "1.500 λ / 1.607 cm",
+            "1.500 λ / 1.606 cm",
+        )
+
+    def test_null_metrics_expose_svd_residual_and_weight_diagnostics(self):
+        null_checkbox = next(
+            item for item in self.app.checkbox
+            if item.label == "영점 조향 활성화"
+        )
+        apply_button = next(
+            item for item in self.app.button if item.label == "설정 적용 및 계산"
+        )
+        null_checkbox.set_value(True)
+        apply_button.click()
+        self.app.run()
+
+        self.app.session_state["active_result_tab"] = "🔍 성능 지표"
+        self.app.run()
+        self.assertEqual(list(self.app.exception), [])
+        metric_values = {item.label: item.value for item in self.app.metric}
+        self.assertEqual(metric_values["Null 제약"], "적용됨")
+        self.assertIn("목표 응답 오차 · 연속해", metric_values)
+        self.assertIn("목표 응답 오차 · 최종", metric_values)
+        self.assertIn("전체 제약 잔차 열화", metric_values)
+        self.assertIn("연속해 최대 진폭", metric_values)
+        self.assertIn("최종 총 가중치 전력", metric_values)
+        self.assertEqual(len(self.app.dataframe), 1)
+
+    def test_undetected_pattern_metrics_render_as_na(self):
+        single_element = AppTest.from_file(str(APP_PATH), default_timeout=30)
+        single_element.query_params.update(
+            {
+                "array_geometry": "ULA (수평 선형)",
+                "vertical_count": "1",
+                "horizontal_count": "1",
+            }
+        )
+        single_element.run()
+        single_element.session_state["active_result_tab"] = "🔍 성능 지표"
+        single_element.run()
+
+        self.assertEqual(list(single_element.exception), [])
+        metric_values = {
+            item.label: item.value for item in single_element.metric
+        }
+        unavailable_labels = {
+            "3dB Beamwidth (Azimuth)",
+            "3dB Beamwidth (Elevation)",
+            "First Null Bandwidth (Azimuth)",
+            "First Null Bandwidth (Elevation)",
+            "Sidelobe Level (Azimuth)",
+            "Sidelobe Level (Elevation)",
+        }
+        self.assertTrue(
+            all(metric_values[label] == "N/A" for label in unavailable_labels)
         )
 
     def test_fragment_scan_advances_and_releases_timer_at_completion(self):
@@ -98,7 +159,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
             all(not item.disabled for item in constrained_widgets().values())
         )
 
-        geometry_widget().select("ULA (수평 선형)")
+        geometry_widget().select("ULA")
         self.app.run()
         self.assertEqual(list(self.app.exception), [])
         ula_widgets = constrained_widgets()
@@ -107,7 +168,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(ula_widgets["목표 Elevation 각도 (°)"].value, 0.0)
         self.assertEqual(ula_widgets["간섭 Elevation 각도 (°)"].value, 0.0)
 
-        geometry_widget().select("UCA (수평 원형)")
+        geometry_widget().select("UCA")
         self.app.run()
         self.assertEqual(list(self.app.exception), [])
         uca_widgets = constrained_widgets()
@@ -116,7 +177,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(uca_widgets["목표 Elevation 각도 (°)"].value, 0.0)
         self.assertEqual(uca_widgets["간섭 Elevation 각도 (°)"].value, 0.0)
 
-        geometry_widget().select("UPA (사각형 평면형)")
+        geometry_widget().select("UPA")
         self.app.run()
         self.assertEqual(list(self.app.exception), [])
         self.assertTrue(
@@ -146,7 +207,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
                 for item in restored.selectbox
                 if item.label == "안테나 배열 형상"
             ),
-            "UCA (수평 원형)",
+            "UCA",
         )
         expected_sliders = {
             "주파수 (GHz)": 35.0,
@@ -175,14 +236,14 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
                 for item in restored.radio
                 if item.label == "3D 빔 패턴 스케일"
             ),
-            "Linear Scale",
+            "linear",
         )
 
     def test_uniform_hexagonal_array_exposes_mathworks_parameters(self):
         geometry_widget = next(
             item for item in self.app.selectbox if item.label == "안테나 배열 형상"
         )
-        geometry_widget.select("UHA (균일 육각 평면형)")
+        geometry_widget.select("UHA")
         self.app.run()
 
         self.assertEqual(list(self.app.exception), [])
@@ -227,7 +288,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
                 item.value for item in restored.selectbox
                 if item.label == "안테나 배열 형상"
             ),
-            "UHA (균일 육각 평면형)",
+            "UHA",
         )
         slider_values = {item.label: item.value for item in restored.slider}
         self.assertEqual(slider_values["주파수 (GHz)"], 12.0)

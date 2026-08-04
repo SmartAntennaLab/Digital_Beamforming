@@ -60,7 +60,7 @@ class DeviceSettingsTests(unittest.TestCase):
 
     def test_share_token_round_trip_is_url_safe_and_validated(self):
         settings = {
-            "array_geometry": "UHA (균일 육각 평면형)",
+            "array_geometry": "UHA",
             "uha_min_count": 2,
             "uha_max_count": 5,
             "scan_azimuth_range": (-30.0, 45.0),
@@ -70,6 +70,30 @@ class DeviceSettingsTests(unittest.TestCase):
         self.assertNotIn("=", token)
         self.assertEqual(decode_share_token(token), settings)
         self.assertEqual(decode_share_token("not-valid-설정"), {})
+
+    def test_legacy_translated_options_migrate_to_stable_ids(self):
+        sanitized = sanitize_device_settings(
+            {
+                "array_geometry": "UCA (수평 원형)",
+                "taper_option": "Uniform (균일)",
+                "element_option": "Cosine² (코사인 제곱)",
+                "phase_bits": "Infinite (무한)",
+                "scale_option": "Linear Scale",
+                "coordinate_option": "Rectangular (직각좌표)",
+            }
+        )
+
+        self.assertEqual(
+            sanitized,
+            {
+                "array_geometry": "UCA",
+                "taper_option": "uniform",
+                "element_option": "cosine_squared",
+                "phase_bits": None,
+                "scale_option": "linear",
+                "coordinate_option": "rectangular",
+            },
+        )
 
     def test_collect_ignores_transient_session_values(self):
         collected = collect_device_settings(

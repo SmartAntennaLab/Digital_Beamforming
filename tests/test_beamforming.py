@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -292,6 +293,11 @@ class WindowAndFailureTests(unittest.TestCase):
         self.assertEqual(int(np.count_nonzero(~first)), 4)
         self.assertTrue(np.all(create_failure_mask(2, 2, 0)))
         self.assertFalse(np.any(create_failure_mask(2, 2, 100)))
+
+    def test_failure_count_uses_explicit_round_half_up_policy(self):
+        mask = create_failure_mask(1, 10, 5.0, seed=42)
+
+        self.assertEqual(int(np.count_nonzero(~mask)), 1)
 
     def test_failure_mask_excludes_uha_padding_and_counts_only_real_elements(self):
         coordinates = create_array_coordinates(2, 4, 0.5, "UHA")
@@ -595,12 +601,17 @@ class PatternMetricAndNullTests(unittest.TestCase):
         self.assertGreater(metrics.sidelobe_level_db, -14.0)
         self.assertLess(metrics.sidelobe_level_db, -12.0)
 
-    def test_single_element_metrics_remain_finite(self):
+    def test_undetected_single_element_metrics_are_explicitly_unavailable(self):
         angles = np.linspace(-np.pi / 2.0, np.pi / 2.0, 181)
         metrics = calculate_pattern_metrics(np.ones_like(angles), angles)
-        self.assertTrue(np.isfinite(metrics.hpbw_deg))
-        self.assertTrue(np.isfinite(metrics.first_null_beamwidth_deg))
-        self.assertTrue(np.isfinite(metrics.sidelobe_level_db))
+        self.assertIsNone(metrics.hpbw_deg)
+        self.assertIsNone(metrics.hpbw_left_index)
+        self.assertIsNone(metrics.hpbw_right_index)
+        self.assertIsNone(metrics.first_null_beamwidth_deg)
+        self.assertIsNone(metrics.first_null_left_index)
+        self.assertIsNone(metrics.first_null_right_index)
+        self.assertIsNone(metrics.sidelobe_level_db)
+        self.assertIsNone(metrics.sidelobe_angle_deg)
 
     def test_null_steering_suppresses_requested_direction(self):
         coordinates = create_array_coordinates(1, 8, 0.5, "ULA")
@@ -633,6 +644,78 @@ class PatternMetricAndNullTests(unittest.TestCase):
         self.assertGreater(abs(target.item()), 0.1)
         self.assertLess(abs(interferer.item()), 1e-10)
         self.assertGreaterEqual(result.null_depths_db[0], 250.0)
+
+    def test_null_solver_uses_direct_svd_and_reports_weight_diagnostics(self):
+        coordinates = create_array_coordinates(1, 16, 0.5, "ULA")
+        amplitudes = np.hamming(16).reshape(coordinates.y.shape)
+        null_directions = [
+            (np.radians(-18.0), 0.0),
+            (np.radians(27.0), 0.0),
+        ]
+        with patch(
+            "numpy.linalg.solve",
+            side_effect=AssertionError("normal-equation solve must not be used"),
+        ):
+            result = compute_beamforming_weights(
+                coordinates.y,
+                coordinates.z,
+                1.0,
+                np.radians(5.0),
+                0.0,
+                amplitudes,
+                null_directions_rad=null_directions,
+            )
+
+        diagnostics = result.continuous_diagnostics
+        self.assertTrue(result.null_applied)
+        self.assertEqual(result.solver_method, "svd_minimum_norm")
+        self.assertIsNone(result.determinant)
+        self.assertLess(diagnostics.target_relative_error, 1e-12)
+        self.assertTrue(
+            all(value < 1e-12 for value in diagnostics.null_relative_residuals)
+        )
+        self.assertLess(diagnostics.constraint_relative_residual_norm, 1e-12)
+        self.assertAlmostEqual(
+            diagnostics.max_amplitude,
+            float(np.max(np.abs(result.continuous_weights))),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            diagnostics.total_weight_power,
+            float(np.sum(np.abs(result.continuous_weights) ** 2)),
+            places=12,
+        )
+        self.assertEqual(result.continuous_diagnostics, result.final_diagnostics)
+        self.assertAlmostEqual(result.quantization_constraint_degradation_db, 0.0)
+
+    def test_svd_solver_remains_accurate_for_nearby_null_constraints(self):
+        coordinates = create_array_coordinates(1, 32, 0.5, "ULA")
+        result = compute_beamforming_weights(
+            coordinates.y,
+            coordinates.z,
+            1.0,
+            0.0,
+            0.0,
+            np.ones_like(coordinates.y),
+            null_directions_rad=[
+                (np.radians(20.0), 0.0),
+                (np.radians(20.0001), 0.0),
+            ],
+            singular_tolerance=1e-8,
+        )
+
+        self.assertTrue(result.null_applied)
+        self.assertGreater(result.condition_number, 1e4)
+        self.assertLess(
+            result.continuous_diagnostics.constraint_relative_residual_norm,
+            1e-12,
+        )
+        self.assertTrue(
+            all(
+                residual < 1e-12
+                for residual in result.continuous_diagnostics.null_relative_residuals
+            )
+        )
 
     def test_final_phase_quantization_reports_actual_null_depth_and_amplitude(self):
         coordinates = create_array_coordinates(1, 8, 0.5, "ULA")
@@ -685,6 +768,38 @@ class PatternMetricAndNullTests(unittest.TestCase):
             abs(null_response.item()) / abs(target_response.item())
         )
         self.assertAlmostEqual(result.null_depths_db[0], measured_depth, places=12)
+        desired_target_magnitude = float(np.sum(np.ones_like(coordinates.y)))
+        self.assertAlmostEqual(
+            result.final_diagnostics.target_response_error,
+            abs(target_response.item() - desired_target_magnitude),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            result.final_diagnostics.null_constraint_residuals[0],
+            abs(null_response.item()),
+            places=12,
+        )
+        self.assertGreater(
+            result.final_diagnostics.target_relative_error,
+            result.continuous_diagnostics.target_relative_error,
+        )
+        self.assertGreater(
+            result.final_diagnostics.null_relative_residuals[0],
+            result.continuous_diagnostics.null_relative_residuals[0],
+        )
+        self.assertGreater(result.quantization_target_degradation_db, 0.0)
+        self.assertGreater(result.quantization_null_degradation_db[0], 0.0)
+        self.assertGreater(result.quantization_constraint_degradation_db, 0.0)
+        self.assertAlmostEqual(
+            result.final_diagnostics.max_amplitude,
+            result.continuous_diagnostics.max_amplitude,
+            places=12,
+        )
+        self.assertAlmostEqual(
+            result.final_diagnostics.total_weight_power,
+            result.continuous_diagnostics.total_weight_power,
+            places=12,
+        )
 
     def test_multiple_null_directions_use_one_expandable_constraint_matrix(self):
         coordinates = create_array_coordinates(1, 8, 0.5, "ULA")
@@ -705,6 +820,11 @@ class PatternMetricAndNullTests(unittest.TestCase):
         self.assertEqual(result.constraint_count, 3)
         self.assertEqual(result.constraint_rank, 3)
         self.assertEqual(len(result.null_depths_db), 2)
+        self.assertEqual(
+            len(result.continuous_diagnostics.null_constraint_residuals),
+            2,
+        )
+        self.assertEqual(len(result.quantization_null_degradation_db), 2)
         self.assertTrue(all(depth >= 250.0 for depth in result.null_depths_db))
 
     def test_coincident_null_falls_back_without_non_finite_weights(self):
@@ -725,6 +845,11 @@ class PatternMetricAndNullTests(unittest.TestCase):
         self.assertTrue(np.isinf(result.condition_number))
         self.assertIsNotNone(result.diagnostic_message)
         self.assertAlmostEqual(result.null_depths_db[0], 0.0)
+        self.assertEqual(result.solver_method, "svd_rejected")
+        self.assertAlmostEqual(
+            result.final_diagnostics.null_relative_residuals[0],
+            1.0,
+        )
 
     def test_zero_pattern_db_normalization_is_finite(self):
         normalized = normalize_pattern_db(np.zeros(4, dtype=complex))
@@ -758,36 +883,45 @@ class ArrayGainMetricTests(unittest.TestCase):
             0.0,
         )
 
-    def test_uniform_gain_uses_actual_active_element_count(self):
+    def test_uniform_relative_gain_uses_actual_active_element_count(self):
         metrics = self._metrics([1.0, 1.0, 0.0, 0.0], [True, True, False, False])
         self.assertEqual(metrics.total_elements, 4)
         self.assertEqual(metrics.active_elements, 2)
         self.assertAlmostEqual(metrics.taper_efficiency, 1.0)
         self.assertAlmostEqual(metrics.phase_efficiency, 1.0)
         self.assertAlmostEqual(metrics.effective_element_count, 2.0)
-        self.assertAlmostEqual(metrics.array_gain_db, 10.0 * np.log10(2.0))
+        self.assertAlmostEqual(
+            metrics.relative_array_gain_db,
+            10.0 * np.log10(2.0),
+        )
 
-    def test_taper_efficiency_reduces_effective_gain(self):
+    def test_taper_efficiency_reduces_relative_gain(self):
         metrics = self._metrics([1.0, 0.5, 0.5, 1.0], [True] * 4)
         self.assertAlmostEqual(metrics.taper_efficiency, 0.9)
         self.assertAlmostEqual(metrics.phase_efficiency, 1.0)
         self.assertAlmostEqual(metrics.effective_element_count, 3.6)
-        self.assertAlmostEqual(metrics.array_gain_db, 10.0 * np.log10(3.6))
+        self.assertAlmostEqual(
+            metrics.relative_array_gain_db,
+            10.0 * np.log10(3.6),
+        )
 
-    def test_gain_is_invariant_for_tiny_nonzero_weights(self):
+    def test_relative_gain_is_invariant_for_tiny_nonzero_weights(self):
         metrics = self._metrics([1e-300] * 4, [True] * 4)
         self.assertAlmostEqual(metrics.taper_efficiency, 1.0)
         self.assertAlmostEqual(metrics.phase_efficiency, 1.0)
         self.assertAlmostEqual(metrics.effective_element_count, 4.0)
-        self.assertAlmostEqual(metrics.array_gain_db, 10.0 * np.log10(4.0))
+        self.assertAlmostEqual(
+            metrics.relative_array_gain_db,
+            10.0 * np.log10(4.0),
+        )
 
-    def test_zero_weights_return_unavailable_gain_without_division(self):
+    def test_zero_weights_return_unavailable_relative_gain(self):
         metrics = self._metrics([0.0] * 4, [False] * 4)
         self.assertEqual(metrics.active_elements, 0)
         self.assertEqual(metrics.taper_efficiency, 0.0)
         self.assertEqual(metrics.phase_efficiency, 0.0)
         self.assertEqual(metrics.effective_element_count, 0.0)
-        self.assertIsNone(metrics.array_gain_db)
+        self.assertIsNone(metrics.relative_array_gain_db)
 
     def test_inactive_elements_cannot_have_nonzero_weights(self):
         with self.assertRaises(ValueError):

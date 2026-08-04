@@ -3,11 +3,13 @@ import unittest
 import numpy as np
 
 from simulation import (
+    LIGHT_SPEED_M_S,
     SURFACE_PATTERN_SCHEMA_VERSION,
     SimulationConfig,
     build_simulation_state,
     calculate_pattern_cuts,
     calculate_surface_pattern,
+    pattern_cut_local_sample_count,
     scan_direction,
     summarize_array_layout,
     surface_local_sample_count,
@@ -16,6 +18,15 @@ from simulation import (
 
 
 class SimulationStateTests(unittest.TestCase):
+    def test_wavelength_uses_the_exact_si_speed_of_light(self):
+        state = build_simulation_state(SimulationConfig(frequency_ghz=28.0))
+
+        self.assertEqual(LIGHT_SPEED_M_S, 299_792_458.0)
+        self.assertEqual(
+            state.wavelength_m,
+            299_792_458.0 / (28.0 * 1.0e9),
+        )
+
     def test_state_applies_independent_upa_spacings(self):
         state = build_simulation_state(
             SimulationConfig(
@@ -98,18 +109,24 @@ class SimulationStateTests(unittest.TestCase):
             )
         )
         summary = summarize_array_layout(state)
+        wavelength_cm = 299_792_458.0 / (4.0 * 1.0e9) * 100.0
 
         self.assertAlmostEqual(summary.horizontal_spacing_wavelength, 0.5)
-        self.assertAlmostEqual(summary.horizontal_spacing_cm, 3.75)
+        self.assertAlmostEqual(summary.horizontal_spacing_cm, 0.5 * wavelength_cm)
         self.assertAlmostEqual(summary.vertical_spacing_wavelength, 0.6)
-        self.assertAlmostEqual(summary.vertical_spacing_cm, 4.5)
+        self.assertAlmostEqual(summary.vertical_spacing_cm, 0.6 * wavelength_cm)
         self.assertAlmostEqual(summary.horizontal_extent_wavelength, 15.5)
-        self.assertAlmostEqual(summary.horizontal_extent_cm, 116.25)
+        self.assertAlmostEqual(
+            summary.horizontal_extent_cm,
+            15.5 * wavelength_cm,
+        )
         self.assertAlmostEqual(summary.vertical_extent_wavelength, 9.0)
-        self.assertAlmostEqual(summary.vertical_extent_cm, 67.5)
+        self.assertAlmostEqual(summary.vertical_extent_cm, 9.0 * wavelength_cm)
         self.assertEqual(summary.total_elements, 512)
         self.assertEqual(summary.active_elements, 384)
         self.assertEqual(summary.failed_elements, 128)
+        self.assertEqual(summary.requested_failure_rate_percent, 25.0)
+        self.assertEqual(summary.actual_failure_rate_percent, 25.0)
 
     def test_uha_layout_uses_derived_row_spacing_and_physical_extent(self):
         state = build_simulation_state(
@@ -175,13 +192,103 @@ class SimulationStateTests(unittest.TestCase):
             state, resolution=9, max_chunk_entries=13
         )
 
-        self.assertEqual(cuts.azimuth_pattern.shape, (37,))
-        self.assertEqual(cuts.elevation_pattern.shape, (37,))
+        self.assertGreater(cuts.azimuth_pattern.size, 37)
+        self.assertGreater(cuts.elevation_pattern.size, 37)
+        self.assertEqual(
+            cuts.azimuth_pattern.shape,
+            cuts.azimuth_angles_rad.shape,
+        )
+        self.assertEqual(
+            cuts.elevation_pattern.shape,
+            cuts.elevation_angles_rad.shape,
+        )
         self.assertGreater(surface.pattern.shape[0], 9)
         self.assertGreater(surface.pattern.shape[1], 9)
         self.assertEqual(surface.schema_version, SURFACE_PATTERN_SCHEMA_VERSION)
         self.assertTrue(np.all(np.isfinite(cuts.azimuth_pattern_db)))
         self.assertTrue(np.all(np.isfinite(surface.pattern_db)))
+
+    def test_pattern_cuts_include_exact_target_and_refine_large_array_beam(self):
+        state = build_simulation_state(
+            SimulationConfig(
+                vertical_count=64,
+                horizontal_count=128,
+                target_azimuth_deg=23.0,
+                target_elevation_deg=-11.0,
+            )
+        )
+        cuts = calculate_pattern_cuts(
+            state,
+            sample_count=181,
+            max_chunk_entries=4_096,
+        )
+
+        target_azimuth = np.radians(23.0)
+        target_elevation = np.radians(-11.0)
+        global_spacing = np.pi / 180.0
+        azimuth_near_target = np.flatnonzero(
+            np.abs(cuts.azimuth_angles_rad - target_azimuth)
+            <= np.radians(cuts.azimuth_refinement_half_width_deg)
+        )
+        elevation_near_target = np.flatnonzero(
+            np.abs(cuts.elevation_angles_rad - target_elevation)
+            <= np.radians(cuts.elevation_refinement_half_width_deg)
+        )
+
+        self.assertTrue(
+            np.any(np.isclose(cuts.azimuth_angles_rad, target_azimuth))
+        )
+        self.assertTrue(
+            np.any(np.isclose(cuts.elevation_angles_rad, target_elevation))
+        )
+        self.assertEqual(cuts.base_sample_count, 181)
+        self.assertEqual(cuts.local_sample_count, 129)
+        self.assertLess(
+            np.min(np.diff(cuts.azimuth_angles_rad[azimuth_near_target])),
+            global_spacing / 4.0,
+        )
+        self.assertLess(
+            np.min(np.diff(cuts.elevation_angles_rad[elevation_near_target])),
+            global_spacing / 4.0,
+        )
+
+    def test_adaptive_cut_metrics_match_dense_128_element_reference(self):
+        state = build_simulation_state(
+            SimulationConfig(
+                vertical_count=1,
+                horizontal_count=128,
+                geometry="ULA",
+                target_azimuth_deg=17.0,
+            )
+        )
+        adaptive = calculate_pattern_cuts(
+            state,
+            sample_count=181,
+            local_sample_count=129,
+            max_chunk_entries=4_096,
+        )
+        dense = calculate_pattern_cuts(
+            state,
+            sample_count=7_201,
+            local_sample_count=3,
+            max_chunk_entries=4_096,
+        )
+
+        self.assertAlmostEqual(
+            adaptive.azimuth_metrics.hpbw_deg,
+            dense.azimuth_metrics.hpbw_deg,
+            delta=0.05,
+        )
+        self.assertAlmostEqual(
+            adaptive.azimuth_metrics.first_null_beamwidth_deg,
+            dense.azimuth_metrics.first_null_beamwidth_deg,
+            delta=0.15,
+        )
+        self.assertAlmostEqual(
+            adaptive.azimuth_metrics.sidelobe_level_db,
+            dense.azimuth_metrics.sidelobe_level_db,
+            delta=0.2,
+        )
 
     def test_surface_grid_contains_exact_steering_direction(self):
         state = build_simulation_state(
@@ -248,7 +355,7 @@ class SimulationStateTests(unittest.TestCase):
         cuts = calculate_pattern_cuts(
             state, sample_count=181, max_chunk_entries=4_096
         )
-        self.assertEqual(cuts.azimuth_pattern.shape, (181,))
+        self.assertGreater(cuts.azimuth_pattern.size, 181)
         self.assertTrue(np.all(np.isfinite(cuts.azimuth_pattern)))
 
 
@@ -285,6 +392,13 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(surface_local_sample_count(512), 65)
         self.assertEqual(surface_local_sample_count(2048), 49)
         self.assertEqual(surface_local_sample_count(16384), 33)
+
+    def test_local_cut_detail_is_bounded_for_large_arrays(self):
+        self.assertEqual(pattern_cut_local_sample_count(64), 65)
+        self.assertEqual(pattern_cut_local_sample_count(65), 129)
+        self.assertEqual(pattern_cut_local_sample_count(16384), 129)
+        with self.assertRaises(ValueError):
+            pattern_cut_local_sample_count(0)
 
 
 if __name__ == "__main__":

@@ -35,8 +35,9 @@ from beamforming import (
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
 BoolArray = NDArray[np.bool_]
-LIGHT_SPEED_M_S = 3.0e8
+LIGHT_SPEED_M_S = 299_792_458.0
 SURFACE_PATTERN_SCHEMA_VERSION = 5
+PATTERN_CUT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -48,10 +49,10 @@ class SimulationConfig:
     horizontal_count: int = 4
     horizontal_spacing_wavelength: float = 0.5
     vertical_spacing_wavelength: float = 0.5
-    geometry: str = "UPA (사각형 평면형)"
-    taper_option: str = "Uniform (균일)"
-    element_option: str = "Isotropic (등방성)"
-    phase_bits: str | int | None = "Infinite (무한)"
+    geometry: str = "UPA"
+    taper_option: str = "uniform"
+    element_option: str = "isotropic"
+    phase_bits: int | None = None
     failure_rate_percent: float = 0.0
     target_azimuth_deg: float = 0.0
     target_elevation_deg: float = 0.0
@@ -95,12 +96,18 @@ class ArrayLayoutSummary:
     total_elements: int
     active_elements: int
     failed_elements: int
+    requested_failure_rate_percent: float
+    actual_failure_rate_percent: float
 
 
 @dataclass(frozen=True)
 class PatternCuts:
     """Azimuth/elevation cuts and their derived performance metrics."""
 
+    base_sample_count: int
+    local_sample_count: int
+    azimuth_refinement_half_width_deg: float
+    elevation_refinement_half_width_deg: float
     azimuth_angles_rad: FloatArray
     elevation_angles_rad: FloatArray
     azimuth_pattern: ComplexArray
@@ -280,6 +287,47 @@ def summarize_array_layout(state: SimulationState) -> ArrayLayoutSummary:
         total_elements=total_elements,
         active_elements=active_elements,
         failed_elements=total_elements - active_elements,
+        requested_failure_rate_percent=float(
+            state.config.failure_rate_percent
+        ),
+        actual_failure_rate_percent=float(
+            100.0 * (total_elements - active_elements) / total_elements
+        ),
+    )
+
+
+def pattern_cut_local_sample_count(element_count: int) -> int:
+    """Select target-region cut detail while bounding array-factor work."""
+
+    if element_count < 1:
+        raise ValueError("Element count must be positive.")
+    return 65 if element_count <= 64 else 129
+
+
+def _projected_cut_apertures(
+    state: SimulationState,
+    target_azimuth_rad: float,
+    target_elevation_rad: float,
+) -> tuple[float, float]:
+    """Return first-order phase apertures for the two principal cuts."""
+
+    physical_mask = state.coordinates.element_mask
+    physical_y = state.coordinates.y[physical_mask]
+    physical_z = state.coordinates.z[physical_mask]
+    azimuth_phase_positions = (
+        physical_y
+        * np.cos(target_elevation_rad)
+        * np.cos(target_azimuth_rad)
+    )
+    elevation_phase_positions = (
+        -physical_y
+        * np.sin(target_elevation_rad)
+        * np.sin(target_azimuth_rad)
+        + physical_z * np.cos(target_elevation_rad)
+    )
+    return (
+        float(np.ptp(azimuth_phase_positions)),
+        float(np.ptp(elevation_phase_positions)),
     )
 
 
@@ -287,16 +335,52 @@ def calculate_pattern_cuts(
     state: SimulationState,
     *,
     sample_count: int = 360,
+    local_sample_count: int | None = None,
     max_chunk_entries: int = 1_000_000,
 ) -> PatternCuts:
-    """Calculate both principal cuts using bounded array-factor workspaces."""
+    """Calculate target-refined cuts using bounded array-factor workspaces."""
 
     if sample_count < 3:
         raise ValueError("Pattern cuts require at least three angle samples.")
-    azimuth_angles = np.linspace(-np.pi / 2.0, np.pi / 2.0, sample_count)
-    elevation_angles = np.linspace(-np.pi / 2.0, np.pi / 2.0, sample_count)
+    local_count = (
+        pattern_cut_local_sample_count(state.coordinates.element_count)
+        if local_sample_count is None
+        else local_sample_count
+    )
+    if local_count < 3:
+        raise ValueError("Local cut refinement requires at least three samples.")
+
     target_azimuth = np.radians(state.current_azimuth_deg)
     target_elevation = np.radians(state.current_elevation_deg)
+    azimuth_aperture, elevation_aperture = _projected_cut_apertures(
+        state,
+        target_azimuth,
+        target_elevation,
+    )
+    azimuth_half_width = _local_angular_half_width(
+        azimuth_aperture,
+        state.wavelength_m,
+    )
+    elevation_half_width = _local_angular_half_width(
+        elevation_aperture,
+        state.wavelength_m,
+    )
+    azimuth_angles = _refined_angular_axis(
+        -np.pi / 2.0,
+        np.pi / 2.0,
+        sample_count,
+        target_azimuth,
+        azimuth_half_width,
+        local_count,
+    )
+    elevation_angles = _refined_angular_axis(
+        -np.pi / 2.0,
+        np.pi / 2.0,
+        sample_count,
+        target_elevation,
+        elevation_half_width,
+        local_count,
+    )
 
     azimuth_pattern = array_factor(
         state.coordinates.y,
@@ -329,6 +413,12 @@ def calculate_pattern_cuts(
     )
 
     return PatternCuts(
+        base_sample_count=sample_count,
+        local_sample_count=local_count,
+        azimuth_refinement_half_width_deg=float(np.degrees(azimuth_half_width)),
+        elevation_refinement_half_width_deg=float(
+            np.degrees(elevation_half_width)
+        ),
         azimuth_angles_rad=np.asarray(azimuth_angles, dtype=float),
         elevation_angles_rad=np.asarray(elevation_angles, dtype=float),
         azimuth_pattern=np.asarray(azimuth_pattern, dtype=complex),

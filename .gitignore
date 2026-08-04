@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 .streamlit/secrets.toml
 streamlit.*.log
+test-results/
+playwright-report/

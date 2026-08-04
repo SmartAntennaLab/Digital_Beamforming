@@ -8,42 +8,27 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+from model_options import (
+    COORDINATE_LABELS,
+    COORDINATE_OPTIONS,
+    ELEMENT_OPTIONS,
+    ELEMENT_PATTERN_LABELS,
+    GEOMETRY_LABELS,
+    GEOMETRY_OPTIONS,
+    PHASE_BIT_LABELS,
+    PHASE_BIT_OPTIONS,
+    SCALE_LABELS,
+    SCALE_OPTIONS,
+    TAPER_LABELS,
+    TAPER_OPTIONS,
+    normalize_option_id,
+)
 
-DEVICE_SETTINGS_SCHEMA_VERSION = 1
+DEVICE_SETTINGS_SCHEMA_VERSION = 2
 DEVICE_STORAGE_KEY = "digital_beamforming.settings.v1"
 
-GEOMETRY_OPTIONS = (
-    "UPA (사각형 평면형)",
-    "UHA (균일 육각 평면형)",
-    "ULA (수평 선형)",
-    "UCA (수평 원형)",
-)
-TAPER_OPTIONS = (
-    "Uniform (균일)",
-    "Hamming",
-    "Hanning",
-    "Blackman",
-    "Bartlett",
-)
-ELEMENT_OPTIONS = (
-    "Isotropic (등방성)",
-    "Cosine (코사인)",
-    "Cosine² (코사인 제곱)",
-    "Dipole (다이폴)",
-)
-PHASE_BIT_OPTIONS = (
-    "Infinite (무한)",
-    "2-bit",
-    "3-bit",
-    "4-bit",
-    "5-bit",
-    "6-bit",
-)
-SCALE_OPTIONS = ("dB Scale", "Linear Scale")
-COORDINATE_OPTIONS = ("Polar (극좌표)", "Rectangular (직각좌표)")
-
 DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
-    "array_geometry": GEOMETRY_OPTIONS[0],
+    "array_geometry": "UPA",
     "frequency_ghz": 28.0,
     "horizontal_count": 4,
     "vertical_count": 4,
@@ -51,17 +36,17 @@ DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
     "uha_min_count": 2,
     "horizontal_spacing": 0.5,
     "vertical_spacing": 0.5,
-    "taper_option": TAPER_OPTIONS[0],
-    "element_option": ELEMENT_OPTIONS[0],
-    "phase_bits": PHASE_BIT_OPTIONS[0],
+    "taper_option": "uniform",
+    "element_option": "isotropic",
+    "phase_bits": None,
     "failure_rate": 0,
     "target_azimuth": 0.0,
     "target_elevation": 0.0,
     "enable_null": False,
     "null_azimuth": 30.0,
     "null_elevation": 0.0,
-    "scale_option": SCALE_OPTIONS[0],
-    "coordinate_option": COORDINATE_OPTIONS[0],
+    "scale_option": "db",
+    "coordinate_option": "polar",
     "show_3db": True,
     "show_3db_value": True,
     "scan_azimuth_range": (-45.0, 45.0),
@@ -78,6 +63,13 @@ def _choice(options: Sequence[str]) -> Callable[[object], str]:
         if text not in options:
             raise ValueError("Unsupported choice.")
         return text
+
+    return validate
+
+
+def _option(labels: Mapping[object, str]) -> Callable[[object], object]:
+    def validate(value: object) -> object:
+        return normalize_option_id(value, labels)
 
     return validate
 
@@ -146,7 +138,7 @@ def _range_pair(minimum: float, maximum: float) -> Callable[[object], tuple[floa
 
 
 SETTING_VALIDATORS: dict[str, Callable[[object], object]] = {
-    "array_geometry": _choice(GEOMETRY_OPTIONS),
+    "array_geometry": _option(GEOMETRY_LABELS),
     "frequency_ghz": _finite_float(1.0, 60.0),
     "horizontal_count": _bounded_int(1, 128),
     "vertical_count": _bounded_int(1, 128),
@@ -154,17 +146,17 @@ SETTING_VALIDATORS: dict[str, Callable[[object], object]] = {
     "uha_min_count": _bounded_int(1, 128),
     "horizontal_spacing": _finite_float(0.1, 1.0),
     "vertical_spacing": _finite_float(0.1, 1.0),
-    "taper_option": _choice(TAPER_OPTIONS),
-    "element_option": _choice(ELEMENT_OPTIONS),
-    "phase_bits": _choice(PHASE_BIT_OPTIONS),
+    "taper_option": _option(TAPER_LABELS),
+    "element_option": _option(ELEMENT_PATTERN_LABELS),
+    "phase_bits": _option(PHASE_BIT_LABELS),
     "failure_rate": _bounded_int(0, 50),
     "target_azimuth": _finite_float(-90.0, 90.0),
     "target_elevation": _finite_float(-90.0, 90.0),
     "enable_null": _boolean,
     "null_azimuth": _finite_float(-90.0, 90.0),
     "null_elevation": _finite_float(-90.0, 90.0),
-    "scale_option": _choice(SCALE_OPTIONS),
-    "coordinate_option": _choice(COORDINATE_OPTIONS),
+    "scale_option": _option(SCALE_LABELS),
+    "coordinate_option": _option(COORDINATE_LABELS),
     "show_3db": _boolean,
     "show_3db_value": _boolean,
     "scan_azimuth_range": _range_pair(-90.0, 90.0),
@@ -184,7 +176,7 @@ def sanitize_device_settings(settings: object) -> dict[str, object]:
         return {}
     if "settings" in settings:
         version = settings.get("schema_version")
-        if version != DEVICE_SETTINGS_SCHEMA_VERSION:
+        if version not in {1, DEVICE_SETTINGS_SCHEMA_VERSION}:
             return {}
         settings = settings.get("settings")
         if not isinstance(settings, Mapping):
