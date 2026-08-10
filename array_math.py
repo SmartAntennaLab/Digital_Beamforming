@@ -64,6 +64,70 @@ def direction_cosines(
     )
 
 
+def great_circle_directions(
+    target_azimuth_rad: float,
+    target_elevation_rad: float,
+    angular_offset_rad: ArrayLike,
+    *,
+    plane: str,
+) -> tuple[FloatArray, FloatArray]:
+    """Return directions on a target-centered great-circle principal plane.
+
+    ``angular_offset_rad`` is signed spherical angular distance from the
+    target.  The horizontal plane starts along increasing azimuth and the
+    vertical plane starts along increasing elevation.  Unlike a fixed
+    azimuth/elevation coordinate cut, one radian on either returned curve is
+    always one radian of physical angular distance on the unit sphere.
+    """
+
+    target_azimuth = float(target_azimuth_rad)
+    target_elevation = float(target_elevation_rad)
+    if not np.isfinite(target_azimuth) or not np.isfinite(target_elevation):
+        raise ValueError("Target angles must be finite.")
+    if not -np.pi / 2.0 <= target_elevation <= np.pi / 2.0:
+        raise ValueError("Target elevation must be between -pi/2 and pi/2.")
+
+    offsets = np.asarray(angular_offset_rad, dtype=float)
+    if np.any(~np.isfinite(offsets)):
+        raise ValueError("Great-circle offsets must be finite.")
+
+    cosine_elevation = np.cos(target_elevation)
+    target = np.array(
+        [
+            cosine_elevation * np.cos(target_azimuth),
+            cosine_elevation * np.sin(target_azimuth),
+            np.sin(target_elevation),
+        ],
+        dtype=float,
+    )
+    if plane == "horizontal":
+        tangent = np.array(
+            [-np.sin(target_azimuth), np.cos(target_azimuth), 0.0],
+            dtype=float,
+        )
+    elif plane == "vertical":
+        tangent = np.array(
+            [
+                -np.sin(target_elevation) * np.cos(target_azimuth),
+                -np.sin(target_elevation) * np.sin(target_azimuth),
+                np.cos(target_elevation),
+            ],
+            dtype=float,
+        )
+    else:
+        raise ValueError("Great-circle plane must be 'horizontal' or 'vertical'.")
+
+    directions = (
+        np.cos(offsets)[..., None] * target + np.sin(offsets)[..., None] * tangent
+    )
+    azimuth = np.arctan2(directions[..., 1], directions[..., 0])
+    elevation = np.arcsin(np.clip(directions[..., 2], -1.0, 1.0))
+    return (
+        np.asarray(azimuth, dtype=float),
+        np.asarray(elevation, dtype=float),
+    )
+
+
 def element_pattern_factor(
     option: str,
     azimuth_rad: ArrayLike,
@@ -112,9 +176,11 @@ def steering_phases(
     if np.any(~np.isfinite(y_array)) or np.any(~np.isfinite(z_array)):
         raise ValueError("Element coordinates must be finite.")
     _, u_y, u_z = direction_cosines(azimuth_rad, elevation_rad)
-    phase = 2.0 * np.pi / wavelength_m * (
-        u_y[..., None] * y_array.ravel()
-        + u_z[..., None] * z_array.ravel()
+    phase = (
+        2.0
+        * np.pi
+        / wavelength_m
+        * (u_y[..., None] * y_array.ravel() + u_z[..., None] * z_array.ravel())
     )
     return np.asarray(phase.reshape(u_y.shape + y_array.shape), dtype=float)
 

@@ -1,12 +1,8 @@
-"""Pure simulation orchestration for the Streamlit beamforming application.
-
-The numerical primitives live in :mod:`beamforming`.  This module combines
-them into one immutable simulation frame so the UI can render only the active
-view and unit tests can exercise the workflow without starting Streamlit.
-"""
+"""Pure simulation orchestration for the digital-beamforming application."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -17,27 +13,42 @@ from beamforming import (
     ArrayGainMetrics,
     BeamformingWeights,
     GratingLobeAssessment,
-    PatternMetrics,
-    array_factor,
     assess_grating_lobes,
     calculate_array_gain_metrics,
-    calculate_pattern_metrics,
     compute_beamforming_weights,
     create_array_coordinates,
     create_array_taper,
     create_failure_mask,
-    element_pattern_factor,
-    normalize_pattern_db,
-    normalize_pattern_linear,
 )
-
+from directivity import DirectivityResult, calculate_directivity
+from model_options import SCAN_MODE_OPTIONS
+from pattern_sampling import (
+    GREAT_CIRCLE_CUT_BASE_SAMPLE_COUNT,
+    GREAT_CIRCLE_CUT_SCHEMA_VERSION,
+    PATTERN_CUT_BASE_SAMPLE_COUNT,
+    PATTERN_CUT_SCHEMA_VERSION,
+    PREVIEW_SURFACE_LOCAL_SAMPLE_COUNT,
+    PREVIEW_SURFACE_RESOLUTION,
+    SURFACE_PATTERN_SCHEMA_VERSION,
+    GreatCircleCuts,
+    PatternCuts,
+    SurfacePattern,
+    SurfaceSamplingPlan,
+    calculate_great_circle_cuts,
+    calculate_pattern_cuts,
+    calculate_surface_pattern,
+    pattern_cut_local_sample_count,
+    scan_surface_sampling,
+    surface_local_sample_count,
+    surface_resolution,
+)
 
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
 BoolArray = NDArray[np.bool_]
 LIGHT_SPEED_M_S = 299_792_458.0
-SURFACE_PATTERN_SCHEMA_VERSION = 5
-PATTERN_CUT_SCHEMA_VERSION = 2
+SCAN_REFERENCE_ELEMENT_COUNT = 4096
+SCAN_REFERENCE_FULL_FRAME_SECONDS = 0.85
 
 
 @dataclass(frozen=True)
@@ -59,6 +70,9 @@ class SimulationConfig:
     enable_null_steering: bool = False
     null_azimuth_deg: float = 30.0
     null_elevation_deg: float = 0.0
+    null_constraints_deg: tuple[tuple[float, float, float], ...] = ()
+    null_optimization_mode: str = "amplitude_phase"
+    maximum_element_amplitude: float | None = None
 
 
 @dataclass(frozen=True)
@@ -101,36 +115,14 @@ class ArrayLayoutSummary:
 
 
 @dataclass(frozen=True)
-class PatternCuts:
-    """Azimuth/elevation cuts and their derived performance metrics."""
+class ScanTimingEstimate:
+    """Empirical scan time estimate calibrated at a 64×64 array."""
 
-    base_sample_count: int
-    local_sample_count: int
-    azimuth_refinement_half_width_deg: float
-    elevation_refinement_half_width_deg: float
-    azimuth_angles_rad: FloatArray
-    elevation_angles_rad: FloatArray
-    azimuth_pattern: ComplexArray
-    elevation_pattern: ComplexArray
-    azimuth_pattern_db: FloatArray
-    elevation_pattern_db: FloatArray
-    azimuth_metrics: PatternMetrics
-    elevation_metrics: PatternMetrics
-
-
-@dataclass(frozen=True)
-class SurfacePattern:
-    """A chunk-computed spherical pattern ready for 3D rendering."""
-
-    schema_version: int
-    base_resolution: int
-    polar_angle_rad: FloatArray
-    azimuth_angle_rad: FloatArray
-    pattern: ComplexArray
-    pattern_linear: FloatArray
-    pattern_db: FloatArray
-    sampled_peak_magnitude: float
-    target_response_magnitude: float
+    frame_seconds: float
+    effective_interval_seconds: float
+    finalization_seconds: float
+    total_seconds: float
+    frame_count: int
 
 
 def build_simulation_state(
@@ -189,14 +181,16 @@ def build_simulation_state(
 
     azimuth_rad = np.radians(azimuth_deg)
     elevation_rad = np.radians(elevation_deg)
-    null_direction = (
-        (
-            np.radians(config.null_azimuth_deg),
-            np.radians(config.null_elevation_deg),
+    null_specs = ()
+    if config.enable_null_steering:
+        null_specs = config.null_constraints_deg or (
+            (config.null_azimuth_deg, config.null_elevation_deg, 40.0),
         )
-        if config.enable_null_steering
-        else None
+    null_directions = tuple(
+        (np.radians(azimuth), np.radians(elevation))
+        for azimuth, elevation, _ in null_specs
     )
+    required_suppression = tuple(float(suppression) for _, _, suppression in null_specs)
     weight_result = compute_beamforming_weights(
         coordinates.y,
         coordinates.z,
@@ -205,7 +199,12 @@ def build_simulation_state(
         elevation_rad,
         base_amplitudes,
         phase_bits=config.phase_bits,
-        null_direction_rad=null_direction,
+        null_directions_rad=null_directions,
+        null_required_suppression_db=required_suppression,
+        maximum_element_amplitude=(
+            config.maximum_element_amplitude if config.enable_null_steering else None
+        ),
+        optimization_mode=config.null_optimization_mode,
     )
     complex_weights = weight_result.weights
     gain_metrics = calculate_array_gain_metrics(
@@ -276,9 +275,7 @@ def summarize_array_layout(state: SimulationState) -> ArrayLayoutSummary:
             else None
         ),
         vertical_spacing_cm=(
-            float(state.vertical_spacing_m * 100.0)
-            if uses_vertical_spacing
-            else None
+            float(state.vertical_spacing_m * 100.0) if uses_vertical_spacing else None
         ),
         horizontal_extent_wavelength=float(horizontal_extent_m / state.wavelength_m),
         horizontal_extent_cm=float(horizontal_extent_m * 100.0),
@@ -287,300 +284,134 @@ def summarize_array_layout(state: SimulationState) -> ArrayLayoutSummary:
         total_elements=total_elements,
         active_elements=active_elements,
         failed_elements=total_elements - active_elements,
-        requested_failure_rate_percent=float(
-            state.config.failure_rate_percent
-        ),
+        requested_failure_rate_percent=float(state.config.failure_rate_percent),
         actual_failure_rate_percent=float(
             100.0 * (total_elements - active_elements) / total_elements
         ),
     )
 
 
-def pattern_cut_local_sample_count(element_count: int) -> int:
-    """Select target-region cut detail while bounding array-factor work."""
-
-    if element_count < 1:
-        raise ValueError("Element count must be positive.")
-    return 65 if element_count <= 64 else 129
-
-
-def _projected_cut_apertures(
-    state: SimulationState,
-    target_azimuth_rad: float,
-    target_elevation_rad: float,
-) -> tuple[float, float]:
-    """Return first-order phase apertures for the two principal cuts."""
-
-    physical_mask = state.coordinates.element_mask
-    physical_y = state.coordinates.y[physical_mask]
-    physical_z = state.coordinates.z[physical_mask]
-    azimuth_phase_positions = (
-        physical_y
-        * np.cos(target_elevation_rad)
-        * np.cos(target_azimuth_rad)
-    )
-    elevation_phase_positions = (
-        -physical_y
-        * np.sin(target_elevation_rad)
-        * np.sin(target_azimuth_rad)
-        + physical_z * np.cos(target_elevation_rad)
-    )
-    return (
-        float(np.ptp(azimuth_phase_positions)),
-        float(np.ptp(elevation_phase_positions)),
-    )
-
-
-def calculate_pattern_cuts(
+def calculate_state_directivity(
     state: SimulationState,
     *,
-    sample_count: int = 360,
-    local_sample_count: int | None = None,
     max_chunk_entries: int = 1_000_000,
-) -> PatternCuts:
-    """Calculate target-refined cuts using bounded array-factor workspaces."""
+    cancel_check: Callable[[], None] | None = None,
+) -> DirectivityResult:
+    """Calculate target-direction directivity for one completed state."""
 
-    if sample_count < 3:
-        raise ValueError("Pattern cuts require at least three angle samples.")
-    local_count = (
-        pattern_cut_local_sample_count(state.coordinates.element_count)
-        if local_sample_count is None
-        else local_sample_count
-    )
-    if local_count < 3:
-        raise ValueError("Local cut refinement requires at least three samples.")
-
-    target_azimuth = np.radians(state.current_azimuth_deg)
-    target_elevation = np.radians(state.current_elevation_deg)
-    azimuth_aperture, elevation_aperture = _projected_cut_apertures(
-        state,
-        target_azimuth,
-        target_elevation,
-    )
-    azimuth_half_width = _local_angular_half_width(
-        azimuth_aperture,
-        state.wavelength_m,
-    )
-    elevation_half_width = _local_angular_half_width(
-        elevation_aperture,
-        state.wavelength_m,
-    )
-    azimuth_angles = _refined_angular_axis(
-        -np.pi / 2.0,
-        np.pi / 2.0,
-        sample_count,
-        target_azimuth,
-        azimuth_half_width,
-        local_count,
-    )
-    elevation_angles = _refined_angular_axis(
-        -np.pi / 2.0,
-        np.pi / 2.0,
-        sample_count,
-        target_elevation,
-        elevation_half_width,
-        local_count,
-    )
-
-    azimuth_pattern = array_factor(
+    return calculate_directivity(
         state.coordinates.y,
         state.coordinates.z,
         state.complex_weights,
         state.wavelength_m,
-        azimuth_angles,
-        np.full_like(azimuth_angles, target_elevation),
-        max_chunk_entries=max_chunk_entries,
-    )
-    azimuth_pattern *= element_pattern_factor(
+        np.radians(state.current_azimuth_deg),
+        np.radians(state.current_elevation_deg),
         state.config.element_option,
-        azimuth_angles,
-        np.full_like(azimuth_angles, target_elevation),
-    )
-
-    elevation_pattern = array_factor(
-        state.coordinates.y,
-        state.coordinates.z,
-        state.complex_weights,
-        state.wavelength_m,
-        np.full_like(elevation_angles, target_azimuth),
-        elevation_angles,
+        element_mask=state.coordinates.element_mask,
         max_chunk_entries=max_chunk_entries,
-    )
-    elevation_pattern *= element_pattern_factor(
-        state.config.element_option,
-        np.full_like(elevation_angles, target_azimuth),
-        elevation_angles,
-    )
-
-    return PatternCuts(
-        base_sample_count=sample_count,
-        local_sample_count=local_count,
-        azimuth_refinement_half_width_deg=float(np.degrees(azimuth_half_width)),
-        elevation_refinement_half_width_deg=float(
-            np.degrees(elevation_half_width)
-        ),
-        azimuth_angles_rad=np.asarray(azimuth_angles, dtype=float),
-        elevation_angles_rad=np.asarray(elevation_angles, dtype=float),
-        azimuth_pattern=np.asarray(azimuth_pattern, dtype=complex),
-        elevation_pattern=np.asarray(elevation_pattern, dtype=complex),
-        azimuth_pattern_db=normalize_pattern_db(azimuth_pattern),
-        elevation_pattern_db=normalize_pattern_db(elevation_pattern),
-        azimuth_metrics=calculate_pattern_metrics(azimuth_pattern, azimuth_angles),
-        elevation_metrics=calculate_pattern_metrics(
-            elevation_pattern, elevation_angles
-        ),
+        cancel_check=cancel_check,
     )
 
 
-def surface_resolution(element_count: int) -> int:
-    """Select a bounded 3D angular grid for the current array size."""
+def _scan_render_work_units(element_count: int, scan_mode: str) -> int:
+    """Approximate array-factor entries rendered by the pattern tab."""
 
-    if element_count < 1:
-        raise ValueError("Element count must be positive.")
-    if element_count <= 256:
-        return 50
-    if element_count <= 1024:
-        return 40
-    if element_count <= 4096:
-        return 30
-    return 20
-
-
-def surface_local_sample_count(element_count: int) -> int:
-    """Select target-region detail while bounding large-array work."""
-
-    if element_count < 1:
-        raise ValueError("Element count must be positive.")
-    if element_count <= 64:
-        return 33
-    if element_count <= 1024:
-        return 65
-    if element_count <= 4096:
-        return 49
-    return 33
-
-
-def _local_angular_half_width(
-    aperture_m: float,
-    wavelength_m: float,
-) -> float:
-    """Estimate a target-centered refinement span from one array aperture."""
-
-    minimum_width = np.radians(0.5)
-    maximum_width = np.radians(12.0)
-    if aperture_m <= np.finfo(float).eps:
-        return maximum_width
-    estimated_width = 4.0 * wavelength_m / aperture_m
-    return float(np.clip(estimated_width, minimum_width, maximum_width))
-
-
-def _refined_angular_axis(
-    start_rad: float,
-    stop_rad: float,
-    base_count: int,
-    target_rad: float,
-    local_half_width_rad: float,
-    local_sample_count: int,
-) -> FloatArray:
-    """Merge a global axis with dense samples around the exact target angle."""
-
-    target = float(np.clip(target_rad, start_rad, stop_rad))
-    local_start = max(start_rad, target - local_half_width_rad)
-    local_stop = min(stop_rad, target + local_half_width_rad)
-    base_axis = np.linspace(start_rad, stop_rad, base_count)
-    local_axis = np.linspace(local_start, local_stop, local_sample_count)
-    return np.asarray(
-        np.unique(np.concatenate((base_axis, local_axis, [target]))),
-        dtype=float,
+    sampling = scan_surface_sampling(element_count, scan_mode, scanning=True)
+    coordinate_cut_points = 2 * (
+        PATTERN_CUT_BASE_SAMPLE_COUNT + pattern_cut_local_sample_count(element_count)
+    )
+    great_circle_cut_points = 2 * (
+        GREAT_CIRCLE_CUT_BASE_SAMPLE_COUNT
+        + pattern_cut_local_sample_count(element_count)
+    )
+    surface_points = 0
+    if sampling.render_3d:
+        surface_points = int(sampling.resolution or 0) + int(
+            sampling.local_sample_count or 0
+        )
+        surface_points **= 2
+    return element_count * (
+        coordinate_cut_points + great_circle_cut_points + surface_points
     )
 
 
-def calculate_surface_pattern(
-    state: SimulationState,
+def estimate_scan_timing(
+    element_count: int,
+    frame_count: int,
+    scan_mode: str,
+    frame_interval_seconds: float,
     *,
-    resolution: int | None = None,
-    local_sample_count: int | None = None,
-    max_chunk_entries: int = 1_000_000,
-) -> SurfacePattern:
-    """Calculate a target-refined spherical surface with bounded workspaces.
+    session_calculations_per_minute: int | None = None,
+    session_burst: int = 1,
+) -> ScanTimingEstimate:
+    """Estimate scan duration from relative array-factor work.
 
-    A coarse global grid keeps the full sphere inexpensive.  A nonuniform
-    local grid is merged around the exact steering direction so a narrow main
-    lobe cannot fall between samples as the array aperture grows.
+    The model is intentionally presented as an estimate: it anchors a full
+    64×64 pattern-tab frame at 0.85 seconds and scales by element/sample work.
+    The requested fragment interval cannot make a slower calculation faster.
     """
 
-    element_count = state.coordinates.element_count
-    grid_size = resolution or surface_resolution(element_count)
-    local_count = (
-        surface_local_sample_count(element_count)
-        if local_sample_count is None
-        else local_sample_count
-    )
-    if grid_size < 3:
-        raise ValueError("Surface resolution must be at least three.")
-    if local_count < 3:
-        raise ValueError("Local surface refinement requires at least three samples.")
+    if element_count < 1:
+        raise ValueError("Element count must be positive.")
+    if frame_count < 1:
+        raise ValueError("Frame count must be positive.")
+    if not np.isfinite(frame_interval_seconds) or frame_interval_seconds < 0.0:
+        raise ValueError("Frame interval must be finite and non-negative.")
+    if scan_mode not in SCAN_MODE_OPTIONS:
+        raise ValueError("Unsupported scan mode.")
+    if (
+        session_calculations_per_minute is not None
+        and session_calculations_per_minute < 1
+    ):
+        raise ValueError("Session calculation rate must be positive.")
+    if session_burst < 1:
+        raise ValueError("Session burst must be positive.")
 
-    target_azimuth = np.radians(state.current_azimuth_deg)
-    target_polar = np.pi / 2.0 - np.radians(state.current_elevation_deg)
-    horizontal_aperture = float(np.ptp(state.coordinates.y))
-    vertical_aperture = float(np.ptp(state.coordinates.z))
-    azimuth = _refined_angular_axis(
-        -np.pi,
-        np.pi,
-        grid_size,
-        target_azimuth,
-        _local_angular_half_width(horizontal_aperture, state.wavelength_m),
-        local_count,
+    reference_work = _scan_render_work_units(
+        SCAN_REFERENCE_ELEMENT_COUNT,
+        "full_3d",
     )
-    polar = _refined_angular_axis(
-        0.0,
-        np.pi,
-        grid_size,
-        target_polar,
-        _local_angular_half_width(vertical_aperture, state.wavelength_m),
-        local_count,
+    mode_work = _scan_render_work_units(element_count, scan_mode)
+    frame_seconds = max(
+        0.02,
+        SCAN_REFERENCE_FULL_FRAME_SECONDS * mode_work / reference_work,
     )
-    polar_grid, azimuth_grid = np.meshgrid(polar, azimuth)
-    elevation_grid = np.pi / 2.0 - polar_grid
-    pattern = array_factor(
-        state.coordinates.y,
-        state.coordinates.z,
-        state.complex_weights,
-        state.wavelength_m,
-        azimuth_grid,
-        elevation_grid,
-        max_chunk_entries=max_chunk_entries,
-    )
-    pattern *= element_pattern_factor(
-        state.config.element_option,
-        azimuth_grid,
-        elevation_grid,
-    )
-    target_response = array_factor(
-        state.coordinates.y,
-        state.coordinates.z,
-        state.complex_weights,
-        state.wavelength_m,
-        target_azimuth,
-        np.radians(state.current_elevation_deg),
-        max_chunk_entries=max_chunk_entries,
-    )
-    target_response *= element_pattern_factor(
-        state.config.element_option,
-        target_azimuth,
-        np.radians(state.current_elevation_deg),
-    )
-    return SurfacePattern(
-        schema_version=SURFACE_PATTERN_SCHEMA_VERSION,
-        base_resolution=grid_size,
-        polar_angle_rad=np.asarray(polar_grid, dtype=float),
-        azimuth_angle_rad=np.asarray(azimuth_grid, dtype=float),
-        pattern=np.asarray(pattern, dtype=complex),
-        pattern_linear=normalize_pattern_linear(pattern),
-        pattern_db=normalize_pattern_db(pattern),
-        sampled_peak_magnitude=float(np.max(np.abs(pattern))),
-        target_response_magnitude=float(np.abs(target_response.item())),
+    effective_interval = max(frame_seconds, frame_interval_seconds)
+
+    finalization_seconds = 0.0
+    if scan_mode != "full_3d":
+        full_work = _scan_render_work_units(element_count, "full_3d")
+        finalization_seconds = max(
+            0.02,
+            SCAN_REFERENCE_FULL_FRAME_SECONDS * full_work / reference_work,
+        )
+
+    total_seconds = frame_count * effective_interval
+    if session_calculations_per_minute is not None:
+        refill_rate = session_calculations_per_minute / 60.0
+        capacity = float(min(session_burst, session_calculations_per_minute))
+        tokens = capacity
+        elapsed_seconds = 0.0
+        updated_at = 0.0
+        for _ in range(frame_count):
+            refill_elapsed = elapsed_seconds - updated_at
+            tokens = min(capacity, tokens + refill_elapsed * refill_rate)
+            updated_at = elapsed_seconds
+            if tokens < 1.0:
+                wait_seconds = (1.0 - tokens) / refill_rate
+                elapsed_seconds += wait_seconds
+                tokens = 1.0
+                updated_at = elapsed_seconds
+            tokens -= 1.0
+            elapsed_seconds += effective_interval
+        total_seconds = elapsed_seconds
+
+    return ScanTimingEstimate(
+        frame_seconds=float(frame_seconds),
+        effective_interval_seconds=float(effective_interval),
+        finalization_seconds=float(finalization_seconds),
+        total_seconds=float(total_seconds + finalization_seconds),
+        frame_count=frame_count,
     )
 
 
@@ -600,13 +431,9 @@ def scan_direction(
         raise ValueError("Scan index is outside the configured raster.")
 
     elevation_index, azimuth_index = divmod(index, azimuth_steps)
-    azimuth_fraction = (
-        azimuth_index / (azimuth_steps - 1) if azimuth_steps > 1 else 0.0
-    )
+    azimuth_fraction = azimuth_index / (azimuth_steps - 1) if azimuth_steps > 1 else 0.0
     elevation_fraction = (
-        elevation_index / (elevation_steps - 1)
-        if elevation_steps > 1
-        else 0.0
+        elevation_index / (elevation_steps - 1) if elevation_steps > 1 else 0.0
     )
     azimuth_deg = azimuth_range_deg[0] + azimuth_fraction * (
         azimuth_range_deg[1] - azimuth_range_deg[0]

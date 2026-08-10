@@ -1,6 +1,6 @@
 # Digital Beamforming Simulator
 
-ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 대상으로 정적 협대역 빔포밍을 분석하는 Streamlit 시뮬레이터입니다. 조향 방향, 배열 간격, 진폭 창, 위상 양자화, 소자 결함과 단일 간섭 방향 null 제약을 적용하고 2D/3D 패턴 및 성능 지표를 확인할 수 있습니다.
+ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 대상으로 정적 협대역 빔포밍을 분석하는 Streamlit 시뮬레이터입니다. 조향 방향, 배열 간격, 진폭 창, 위상 양자화, 소자 결함과 최대 8개의 간섭 방향 null 제약을 적용하고 2D/3D 패턴, 물리적 빔폭과 전구 적분 Directivity를 함께 확인할 수 있습니다.
 
 이 프로그램은 RF/IQ 수신기나 실제 안테나 하드웨어를 제어하지 않습니다.
 
@@ -12,14 +12,28 @@ ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 �
 - 이상적 위상 또는 2–6비트 위상 양자화
 - Isotropic, Cosine, Cosine², Z축 반파장 Dipole 소자 패턴
 - 고정 시드의 재현 가능한 소자 결함 시뮬레이션
-- 단일 간섭 방향 null 조향, SVD 제약 해법과 양자화 전·후 잔차·null 깊이 진단
-- Azimuth/Elevation 2D 컷, 3D 구면 패턴, 소자 위치·위상·진폭 표시
+- 최대 8개 간섭원, 방향별 요구 억압량, SVD/위상 전용 null 최적화와 진폭 상한
+- 요구 null 미달 방향, 양자화 전·후 제약 잔차와 진폭 포화 소자 진단
+- 고정 좌표각 Azimuth/Elevation 컷, 목표 방향 Great-circle 주평면 컷, 3D 구면 패턴
 - 소자 배치 탭에서 수평·수직 간격과 전체 배열 길이를 파장·cm로 표시하고 전체·활성·결함 소자 수 집계
-- HPBW, FNBW, SLL, 상대 배열 이득, 테이퍼 효율, 위상·조향 효율
+- 좌표각·실제 각거리 HPBW, FNBW, SLL, 상대 배열 이득, 전구 적분 Directivity, 테이퍼·위상 효율
 - 형상별 격자 로브 또는 공간 앨리어싱 위험 진단
 - CSV 패턴 데이터와 Markdown 설계 보고서 다운로드
 - 동적 탭, form, fragment와 각도·소자 청크 기반 대규모 배열 계산
+- 자동 스캔의 2D 전용·3D 미리보기·전체 품질 모드, 예상 시간 안내와 종료 후 전체 품질 최종 프레임
 - Custom Component v2 기반 장치·브라우저별 설정 자동 복원과 선택적 공유 링크
+
+## v1.5 개발 상태
+
+2026-08-10 기준으로 다음 확장을 반영했습니다.
+
+- 좌표각 HPBW와 목표 방향을 지나는 Great-circle 실제 각거리 HPBW 분리
+- 최종 가중치의 전구 방사전력 적분 기반 directional directivity 추가
+- 다중 null, 방향별 요구 억압량, 위상 전용 최적화, 소자 진폭 상한과 미달·포화 진단 추가
+- 패턴·지표·소자 UI, 설정 저장, 스캔 제어, 패턴 표본화 모듈 분리
+- 동시 계산·대기열·세션 호출률·deadline·취소 및 자원 상한 보호 추가
+
+일반 환경의 전체 회귀 검사 결과는 **130개 통과, 브라우저 E2E 1개 skip**입니다. E2E는 `RUN_E2E=1`인 GitHub Actions 전용 단계에서 Chromium으로 별도 실행합니다.
 
 ## 지원 환경
 
@@ -35,7 +49,7 @@ ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 �
 
 Streamlit 1.60 자체는 Python 3.10–3.14를 지원하지만, 이 프로젝트는 고정한 NumPy 버전과 Dev Container 기준을 고려해 Python 3.11부터 지원합니다. Python 3.10 이하와 3.15 이상, PyPy는 지원·회귀 검증 범위에 포함하지 않습니다.
 
-직접 사용하는 패키지는 다음 네 개이며 재현 가능한 설치를 위해 버전을 고정했습니다.
+직접 사용하는 패키지는 다음 다섯 개이며 재현 가능한 설치를 위해 버전을 고정했습니다.
 
 | 패키지 | 버전 | 용도 |
 |---|---:|---|
@@ -43,13 +57,14 @@ Streamlit 1.60 자체는 Python 3.10–3.14를 지원하지만, 이 프로젝트
 | NumPy | 2.3.5 | 배열 좌표와 빔포밍 수치 계산 |
 | Plotly | 6.9.0 | 2D/3D 대화형 시각화 |
 | pandas | 2.3.3 | CSV 내보내기 데이터 구성 |
+| psutil | 7.2.2 | 프로세스 CPU·RSS와 시스템 자원 모니터링 |
 
 `pyproject.toml`은 Python 범위를 `>=3.11,<3.15`로 제한하고 의존성을 세 그룹으로 분리합니다.
 
 | 그룹 | 설치 대상 |
 |---|---|
-| 기본 런타임 | Streamlit, NumPy, Plotly, pandas |
-| `dev` extra | pip, pip-audit, pip-licenses |
+| 기본 런타임 | Streamlit, NumPy, Plotly, pandas, psutil |
+| `dev` extra | pip, pip-audit, pip-licenses, setuptools |
 | `e2e` extra | Playwright |
 
 `uv.lock`은 위 직접 의존성과 모든 전이 의존성의 정확한 버전, 운영체제·Python 마커, 배포 파일 SHA-256을 함께 기록하는 단일 잠금 소스입니다. 수동으로 편집하지 말고 `uv lock`으로만 갱신합니다. 이 프로젝트가 검증한 uv 버전은 **0.11.29**입니다.
@@ -164,30 +179,45 @@ Digital_Beamforming/
 │       └── dependency-health.yml # 정기 취약점·라이선스 검사
 ├── .streamlit/
 │   └── config.toml            # 서버 포트와 CORS/XSRF 보호 설정
+├── deploy/
+│   ├── nginx.conf.example     # TLS·Basic Auth·IP rate/connection limit 예제
+│   ├── digital-beamforming.service.example # systemd CPU·메모리 quota 예제
+│   └── README.md              # 공개 서버 보호·모니터링 운영 절차
 ├── tests/
 │   ├── e2e/
 │   │   └── test_local_storage.py # 실제 localStorage 새로고침·복원 테스트
 │   ├── __init__.py
 │   ├── test_app.py            # 동적 탭과 fragment 통합 테스트
 │   ├── test_beamforming.py    # 수학 로직 회귀 테스트
+│   ├── test_compute_governor.py # semaphore·rate limit·deadline·취소 테스트
+│   ├── test_directivity.py     # 전구 적분 지향도 수치 회귀 테스트
 │   ├── test_device_settings.py # 브라우저 설정 검증·공유 토큰 테스트
+│   ├── test_module_boundaries.py # 분리 모듈·호환 facade 경계 테스트
 │   ├── test_resource_policy.py # 배열·스캔 계산 상한 테스트
 │   └── test_simulation.py     # 프레임·청크·스캔 회귀 테스트
 ├── array_geometry.py          # 배열 좌표·창·결함·격자 로브
 ├── array_math.py              # 방향 코사인·조향 벡터·소자 패턴
 ├── beamforming.py             # 분리된 수치 API의 호환 import 계층
+├── compute_governor.py        # 프로세스 동시성·세션 빈도·취소·자원 계측
 ├── device_settings.py         # 장치별 설정 스키마·검증·공유 토큰
 ├── device_storage.py          # Streamlit CCv2 localStorage 브리지
+├── directivity.py             # 전구 방사전력 적분과 목표 방향 지향도
 ├── exporters.py               # CSV·Markdown 내보내기
 ├── model_options.py           # 안정적인 내부 ID와 한글 UI 라벨
 ├── null_solver.py             # SVD 제한 최소제곱과 진단
 ├── pattern_metrics.py         # 배열 인자·정규화·HPBW/FNBW/SLL·이득
-├── resource_policy.py         # 세션별 배열·스캔 계산 상한
-├── settings_panel.py          # 입력·브라우저 저장·스캔 설정 패널
-├── simulation.py              # UI 독립 시뮬레이션 프레임과 패턴 계산
+├── pattern_sampling.py        # 좌표각·Great-circle 컷과 적응형 3D 표면 샘플링
+├── resource_policy.py         # 요청·프로세스·세션별 계산 정책과 절대 상한
+├── scan_controls.py           # 자동 스캔 폼·품질·시간 추정·시작/중지 상태
+├── settings_panel.py          # 배열·조향·Null 입력 패널 조립
+├── settings_storage.py        # 브라우저 저장·공유 링크·세션 설정 초기화
+├── simulation.py              # UI 독립 상태 생성·directivity·스캔 orchestration
 ├── simulation_cache.py        # 제한된 Streamlit 계산 캐시
+├── ui_elements.py             # 소자 배치·위상·진폭·포화 렌더링
 ├── ui_formatters.py           # N/A·단위·진단 표시 형식
-├── ui_renderers.py            # 패턴·지표·소자 Plotly/Streamlit 렌더러
+├── ui_metrics.py              # 성능 지표·Null 진단·내보내기 UI
+├── ui_pattern.py              # 2D/3D 방사 패턴 Plotly 렌더링
+├── ui_renderers.py            # 공통 진단과 기존 렌더러 import 호환 facade
 ├── main.py                    # 앱 조립·동적 탭·fragment 진입점
 ├── pyproject.toml             # Python 범위와 런타임·dev·E2E 직접 의존성
 ├── uv.lock                    # 전이 의존성 버전·플랫폼 마커·SHA-256 잠금
@@ -195,7 +225,7 @@ Digital_Beamforming/
 └── ReadMe.txt                 # README.md로 안내하는 이전 파일명 호환 문서
 ```
 
-`array_geometry.py`, `array_math.py`, `null_solver.py`, `pattern_metrics.py`, `beamforming.py`, `simulation.py`는 Streamlit에 의존하지 않으므로 별도 Python 코드에서도 가져와 사용할 수 있습니다. 코어 설정은 `UPA`, `uniform`, `isotropic`, `db` 같은 안정적인 ID를 사용하고 한글 문구는 UI에서만 변환합니다.
+`array_geometry.py`, `array_math.py`, `null_solver.py`, `pattern_metrics.py`, `pattern_sampling.py`, `directivity.py`, `beamforming.py`, `simulation.py`는 Streamlit에 의존하지 않으므로 별도 Python 코드에서도 가져와 사용할 수 있습니다. 코어 설정은 `UPA`, `uniform`, `isotropic`, `db` 같은 안정적인 ID를 사용하고 한글 문구는 UI에서만 변환합니다.
 
 ## 좌표계와 배열 모델
 
@@ -233,9 +263,13 @@ ULA와 UPA의 격자 로브는 축별 간격을 사용한 복제 방향 `u_y+p/(
 
 기본 조향 위상은 목표 방향 조향 벡터의 켤레입니다. `b`비트 위상 천이기의 간격은 `Δ=2π/2ᵇ`이고 최종 위상은 `round(φ/Δ)Δ`로 양자화합니다. 진폭 0인 소자는 양자화 후에도 정확히 0으로 유지합니다.
 
-Null 조향은 배열 인자와 동일한 조향 벡터로 목표 응답 보존과 간섭 방향 응답 0의 제약식을 구성합니다. 진폭 가중 제어 공간의 제약 행렬을 `A=UΣVᴴ`로 직접 SVD 분해하고 `δ=VΣ⁻¹Uᴴ(d-Au₀)`인 최소노름 보정을 적용합니다. `AAᴴ` Gram matrix나 정규방정식을 만들지 않으므로 조건수를 제곱시키지 않습니다. 제약 행렬의 rank가 부족하거나 condition number가 허용 범위를 넘으면 기본 조향 가중치로 안전하게 되돌아갑니다. 계산 모듈은 여러 null 방향을 받을 수 있지만 현재 UI는 하나만 입력합니다.
+### Null 조향 현실성 확장 (2026-08-04)
 
-성능 탭과 Markdown 설계 보고서는 연속 제약해와 최종 위상 양자화해를 각각 다시 평가합니다. `r=Cw-d`에 대해 목표 응답 절대·상대 오차, 각 null의 절대 잔차와 목표 응답으로 정규화한 dB 잔차, 전체 제약 잔차 노름의 양자화 열화, 최대 소자 진폭과 총 가중치 전력 `Σ|wₙ|²`를 표시합니다. 잔차 열화는 `20 log10(r_final/r_continuous)`로 정의하여 양수가 클수록 양자화로 제약이 더 나빠졌음을 뜻합니다. 현재 위상 전용 양자화에서는 소자 진폭을 유지하므로 양자화 전·후 최대 진폭과 총 가중치 전력이 같습니다.
+Null 조향은 배열 인자와 동일한 조향 벡터로 목표 응답 보존과 최대 8개 간섭 방향 응답 0의 제약식을 구성합니다. UI에서 각 간섭원의 Azimuth/Elevation과 요구 억압량을 개별 입력합니다. 진폭·위상 동시 제어는 진폭 가중 제어 공간의 제약 행렬을 `A=UΣVᴴ`로 직접 SVD 분해하고 `δ=VΣ⁻¹Uᴴ(d-Au₀)`인 최소노름 보정을 적용합니다. `AAᴴ` Gram matrix나 정규방정식을 만들지 않으므로 조건수를 제곱시키지 않습니다. 제약 행렬의 rank가 부족하거나 condition number가 허용 범위를 넘으면 기본 조향 가중치로 안전하게 되돌아갑니다.
+
+위상 전용 모드는 기준 테이퍼 진폭을 고정하고, SVD 해의 위상을 초기값으로 사용한 뒤 목표 응답 오차와 방향별 요구 억압량으로 정규화한 null 잔차를 projected-gradient 방식으로 반복 최소화합니다. 최대 소자 진폭 제한을 사용하면 기준 진폭과 SVD 복소 가중치 모두 설정한 상한을 넘지 않도록 투영합니다. 진폭 상한, 위상 전용 제약 또는 최종 위상 양자화 때문에 정확한 null이 불가능할 수 있으므로, 최종 null 깊이가 방향별 요구량을 충족하는지 별도로 판정합니다.
+
+성능 탭과 Markdown 설계 보고서는 연속 제약해와 최종 위상 양자화해를 각각 다시 평가합니다. `r=Cw-d`에 대해 목표 응답 절대·상대 오차, 각 null의 절대 잔차와 목표 응답으로 정규화한 dB 잔차, 전체 제약 잔차 노름의 양자화 열화, 최대 소자 진폭과 총 가중치 전력 `Σ|wₙ|²`를 표시합니다. 요구 억압 충족 수와 미달 방향, 진폭 상한에 도달한 포화 소자 수를 함께 표시하며 안테나 배치 도표에서는 포화 소자를 주황색 외곽선으로 구분합니다. 잔차 열화는 `20 log10(r_final/r_continuous)`로 정의하여 양수가 클수록 양자화로 제약이 더 나빠졌음을 뜻합니다.
 
 ## 지표 정의
 
@@ -246,6 +280,13 @@ Null 조향은 배열 인자와 동일한 조향 벡터로 목표 응답 보존�
 ### HPBW
 
 주엽 최대점 좌우에서 진폭이 `1/√2`로 내려가는 지점 사이의 각도 폭입니다. 이는 전력 기준 절반, 약 -3.0103 dB에 해당합니다. 교차 각도는 인접 각도 표본의 **선형 진폭** 사이를 선형 보간합니다. 한쪽 교차점만 있으면 최대점을 기준으로 대칭 폭을 사용하고, 교차점이 없으면 미검출 상태인 `None`으로 보관하고 화면과 보고서에 `N/A`로 표시합니다.
+
+성능 탭은 두 종류의 HPBW를 구분합니다.
+
+- **좌표각 HPBW:** Elevation을 고정한 Azimuth 좌표 컷과 Azimuth를 고정한 Elevation 좌표 컷에서 잰 좌표 차이입니다.
+- **실제 각거리 HPBW:** 목표 단위벡터 `u₀`와 그 지점의 수평·수직 단위 접선 `t`에 대해 `u(δ)=u₀ cosδ+t sinδ`로 만든 Great-circle 주평면에서 잰 폭입니다. 가로축 `δ` 자체가 구면 각거리이므로 큰 조향각에서도 좌표 압축·확대의 영향을 받지 않습니다.
+
+Broadside에서는 두 정의가 일치하지만 큰 Elevation에서 고정 Elevation Azimuth 폭은 실제 수평 각거리 폭과 달라질 수 있습니다. Great-circle 컷은 -180°부터 +180°까지 전 주평면을 그리고 목표 오프셋 0°를 반드시 포함합니다.
 
 ### FNBW
 
@@ -279,7 +320,19 @@ G_relative = 10 log10(N_eff) dB
 
 `G_relative`는 단일 소자 대비 목표 방향의 상대적인 coherent combining 지표입니다. 실제 활성 소자, 진폭 테이퍼, 위상 양자화와 null 조향에 따른 손실은 반영하지만, 구면 전체의 방사 패턴을 적분하지 않으므로 directivity가 아니며 절대 이득 단위인 dBi로 표시하지 않습니다. 실제 소자 이득, 급전/RF 손실, 상호 결합 손실도 포함하지 않습니다. 모든 가중치가 0이면 이 값은 `N/A`입니다.
 
-실제 directivity를 계산하려면 동일한 최종 가중치와 소자 패턴으로 전구 방사강도 `U(θ,φ)`를 충분히 조밀하게 적분하고 `D(θ,φ)=4πU(θ,φ)/∫U dΩ`를 별도로 평가해야 합니다. 현재 3D 표면은 시각화를 위한 비균일·제한 해상도 격자이므로 그 적분에는 사용하지 않습니다.
+### 전구 적분 Directivity
+
+동일한 최종 가중치와 소자 패턴으로 목표 방향의 물리적 지향도를 상대 배열 이득과 별도로 계산합니다.
+
+```text
+U(φ,θ) = |AF(φ,θ) E(φ,θ)|²
+D_target = 4π U(target) / ∫sphere U(φ,θ) dΩ
+Directivity = 10 log10(D_target) dBi
+```
+
+Isotropic, Cosine, Cosine² 소자 패턴은 소자 쌍별 전구 적분 커널을 사용해 제한된 3D 표시 메시와 무관하게 방사전력 적분을 계산합니다. Z축 반파장 Dipole은 `sin(Elevation)` 축의 Gauss–Legendre 구적과 주기 Azimuth 구적으로 전구를 적분하며 사용한 표본 수를 화면에 표시합니다. 모든 가중치가 0이거나 방사전력 분모가 수치적으로 유효하지 않으면 `N/A`입니다.
+
+표시값은 조향 **목표 방향의 directional directivity**입니다. 실제 최대 방사 방향이 목표에서 벗어난 특이 설정에서는 패턴 전체의 최대 directivity와 다를 수 있습니다. 또한 급전·RF 손실과 상호 결합을 포함하지 않으므로 realized gain이 아닙니다. 3D 표면은 계속 시각화 전용이며 directivity 적분의 분모로 재사용하지 않습니다.
 
 ## 모델 가정과 한계
 
@@ -291,7 +344,7 @@ G_relative = 10 log10(N_eff) dB
 - 상호 결합, 스캔 임피던스, 소자 위치 오차, 위상·진폭 보정 오차와 열 영향은 포함하지 않습니다.
 - 적응형 MVDR/LCMV, DOA 추정과 실시간 데이터 처리는 구현하지 않습니다.
 - 결함은 완전 비활성 소자로만 모델링하며 부분 성능 저하는 포함하지 않습니다.
-- 2D 컷은 전역 360개 표본에 정확한 목표 각도와 목표 방향 투영 개구에 따른 국부 표본을 합칩니다. 실제 표본 수와 세분화 반폭은 패턴 탭에 표시되며, FNBW와 SLL 위치는 최종 비균일 표본 해상도의 영향을 받습니다.
+- 고정 좌표각 2D 컷은 전역 360개 표본, Great-circle 컷은 전 주평면의 전역 720개 표본에 정확한 목표점과 투영 개구 기반 국부 표본을 합칩니다. 실제 표본 수와 세분화 반폭은 패턴 탭에 표시되며, FNBW와 SLL 위치는 최종 비균일 표본 해상도의 영향을 받습니다.
 - 청크 처리는 배열 인자의 임시 위상 행렬을 기본 1,000,000개 항목 이하로 제한하지만 전체 좌표와 가중치는 메모리에 유지합니다.
 - 3D 전역 해상도는 소자 수에 따라 50×50에서 20×20으로 낮아지지만, 실제 목표 조향각을 반드시 포함하고 배열 개구에 따라 목표 주변에 비균일 세부 표본을 추가합니다.
 
@@ -301,13 +354,13 @@ G_relative = 10 log10(N_eff) dB
 
 ```toml
 [server]
-headless = false
+headless = true
 port = 8501
 enableCORS = true
 enableXsrfProtection = true
 ```
 
-로컬 실행에서는 기본 브라우저가 자동으로 열리도록 `headless=false`를 사용합니다. 자동 브라우저가 필요 없는 Dev Container만 실행 명령의 `--server.headless=true`로 이 값을 덮어씁니다. Dev Container 실행 명령은 CORS/XSRF를 끄는 플래그를 사용하지 않습니다.
+저장소 기본값은 서버·Dev Container·Community Cloud에서 일관되게 동작하도록 `headless=true`입니다. 로컬에서 브라우저 자동 열기가 필요하면 실행할 때만 `--server.headless=false`를 지정하십시오. Dev Container 실행 명령은 CORS/XSRF를 끄는 플래그를 사용하지 않습니다.
 
 별도 도메인이나 reverse proxy를 사용하는 경우 보호 기능을 끄지 말고 공개 URL에 맞게 `browser.serverAddress`, `browser.serverPort`, 필요한 `server.corsAllowedOrigins`를 배포 환경에서 설정하십시오. 다중 replica에서는 동일한 비밀 `server.cookieSecret`과 session stickiness가 필요할 수 있습니다. 비밀값은 `.streamlit/secrets.toml` 또는 배포 플랫폼의 secret 관리 기능에 저장하고 Git에 커밋하지 마십시오.
 
@@ -320,8 +373,15 @@ enableXsrfProtection = true
 | 실제 소자 수 | 4,096 | 16,384 |
 | 스캔 프레임 | 400 | 1,000 |
 | 누적 element-frames | 1,000,000 | 4,000,000 |
+| 프로세스 동시 계산 | 2 | 32 |
+| 계산 슬롯 대기 | 1초 | 30초 |
+| 계산 제한 시간 | 10초 | 120초 |
+| 세션 계산 빈도 | 분당 120회 | 분당 600회 |
+| 세션 순간 burst | 8회 | 60회 |
 
-운영 환경에서는 `DBF_MAX_ELEMENTS`, `DBF_MAX_SCAN_FRAMES`, `DBF_MAX_SCAN_ELEMENT_FRAMES` 환경 변수로 기본값보다 낮거나 절대 상한 이내의 정책을 지정할 수 있습니다. 상한을 넘은 요청은 계산 전에 중단되고 스캔 상태도 해제됩니다. 이 제한은 한 요청의 CPU·메모리 폭증을 막지만 사용자 인증이나 전체 서버 동시 실행 수 제한을 대신하지 않습니다. 인터넷에 공개할 때는 reverse proxy 또는 호스팅 플랫폼의 인증, 요청률 제한, 프로세스별 CPU/메모리 quota와 모니터링을 함께 적용하십시오.
+운영 환경에서는 기존 `DBF_MAX_ELEMENTS`, `DBF_MAX_SCAN_FRAMES`, `DBF_MAX_SCAN_ELEMENT_FRAMES` 외에 `DBF_MAX_CONCURRENT_CALCULATIONS`, `DBF_COMPUTE_QUEUE_TIMEOUT_SECONDS`, `DBF_COMPUTE_TIMEOUT_SECONDS`, `DBF_SESSION_CALCULATIONS_PER_MINUTE`, `DBF_SESSION_BURST`, `DBF_HEALTH_LOG_INTERVAL_SECONDS`를 지정할 수 있습니다. 프로세스 전체 semaphore가 동시 계산을 제한하고, 세션별 token bucket이 반복 계산을 완화합니다. 계산 deadline과 사용자 취소는 배열 인자의 각도·소자 청크 경계에서 확인하므로 진행 중인 NumPy 호출 하나는 완료된 뒤 중단됩니다.
+
+사이드바 `서버 계산 상태`에서 동시·대기 계산, CPU와 메모리, 거절·시간 초과·취소 누계를 확인할 수 있으며 동일 정보가 `compute_health` 구조화 로그로 주기적으로 출력됩니다. 이 제한은 애플리케이션 프로세스 내부 보호이며 사용자 인증, 여러 replica 전체의 전역 제한 또는 운영체제 quota를 대신하지 않습니다. 공개 배포에서는 [deploy/README.md](deploy/README.md)의 Nginx Basic Auth·IP rate limit 예제와 systemd CPU·메모리 제한을 함께 적용하십시오.
 
 ## Streamlit Community Cloud 배포
 
@@ -341,15 +401,18 @@ Community Cloud는 `uv.lock`과 `pyproject.toml`을 사용해 기본 런타임 �
 - form 제출 전에는 입력 변경으로 비싼 계산을 다시 실행하지 않습니다.
 - Streamlit 1.60 동적 탭의 `.open` 상태를 확인해 현재 탭만 계산합니다.
 - 자동 스캔은 `st.fragment(run_every=...)`로 활성 탭만 갱신합니다.
+- 자동 스캔의 기본값인 `3D 미리보기`는 실행 중 전역 16×16과 목표 주변 17개 표본을 사용합니다. `2D 전용`은 실행 중 3D를 생략하고, `전체 품질 3D`는 모든 프레임을 정상 해상도로 계산합니다.
+- `2D 전용`과 `3D 미리보기`는 중지 또는 완료 시 마지막 조향 방향을 유지한 채 전체 품질 3D를 한 번 다시 계산합니다. UI의 프레임·총 시간은 64×64 전체 품질 프레임 약 0.85초를 기준으로 한 경험적 추정치이며 실행 CPU와 활성 탭에 따라 달라집니다.
 - 배열 인자는 각도 또는 소자 축을 자동 청크 처리하고 필요하면 두 축을 함께 나눕니다.
-- 2D 컷은 전역 격자에 최대 129개의 목표 주변 표본을 추가해 대규모 배열의 HPBW, FNBW와 초기 부엽을 세분화합니다.
+- 좌표각·Great-circle 2D 컷은 전역 격자에 최대 129개의 목표 주변 표본을 추가해 대규모 배열의 HPBW, FNBW와 초기 부엽을 세분화합니다.
+- Directivity는 성능 지표 탭을 열 때만 계산하고 제한된 캐시에 저장합니다. 소자 쌍 적분과 Dipole 구적 모두 계산 취소·시간 제한을 확인합니다.
 - 3D 패턴은 배열 크기에 따라 전역 각도 해상도를 제한하고, 좁은 주엽을 놓치지 않도록 목표 방향 주변만 적응형으로 세분화합니다.
 - Streamlit 데이터 캐시는 `max_entries`로 상한을 둡니다.
 
 ## 출력 데이터
 
-- `beam_pattern_data.csv`: 서로 독립적인 Azimuth/Elevation 비균일 각도와 각 정규화 이득. 검출 기반 파생 지표의 sentinel 값은 포함하지 않습니다.
-- `beamforming_design_report.md`: 배열 설정, 조향 조건, HPBW/FNBW/SLL, 이득과 null 지표. 미검출 지표는 `N/A`로 기록합니다.
+- `beam_pattern_data.csv`: 서로 독립적인 Azimuth/Elevation 좌표 컷과 수평/수직 Great-circle 비균일 각거리 및 각 정규화 이득. 검출 기반 파생 지표의 sentinel 값은 포함하지 않습니다.
+- `beamforming_design_report.md`: 배열 설정, 조향 조건, 좌표각·실제 각거리 HPBW/FNBW/SLL, 상대 배열 이득, Directivity와 null 지표. 미검출 지표는 `N/A`로 기록합니다.
 
 ## 참고 문서
 

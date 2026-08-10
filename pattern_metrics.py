@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import TypeAlias
 
 import numpy as np
@@ -55,6 +56,7 @@ def array_factor(
     angle_chunk_size: int | None = None,
     element_chunk_size: int | None = None,
     max_chunk_entries: int = 1_000_000,
+    cancel_check: Callable[[], None] | None = None,
 ) -> ComplexArray:
     """Evaluate the array factor with bounded angle/element working sets."""
 
@@ -69,6 +71,8 @@ def array_factor(
         raise ValueError("Element chunk size must be positive.")
     if max_chunk_entries < 1:
         raise ValueError("Maximum chunk entries must be positive.")
+    if cancel_check is not None:
+        cancel_check()
 
     azimuth = np.asarray(azimuth_rad, dtype=float)
     elevation = np.asarray(elevation_rad, dtype=float)
@@ -122,9 +126,13 @@ def array_factor(
     y_flat = y_array.ravel()
     z_flat = z_array.ravel()
     for angle_start in range(0, angle_count, effective_angle_chunk):
+        if cancel_check is not None:
+            cancel_check()
         angle_stop = min(angle_count, angle_start + effective_angle_chunk)
         partial = np.zeros(angle_stop - angle_start, dtype=complex)
         for element_start in range(0, element_count, effective_element_chunk):
+            if cancel_check is not None:
+                cancel_check()
             element_stop = min(
                 element_count,
                 element_start + effective_element_chunk,
@@ -136,10 +144,10 @@ def array_factor(
                 azimuth_flat[angle_start:angle_stop],
                 elevation_flat[angle_start:angle_stop],
             )
-            partial += np.exp(1j * phases) @ weights_flat[
-                element_start:element_stop
-            ]
+            partial += np.exp(1j * phases) @ weights_flat[element_start:element_stop]
         result[angle_start:angle_stop] = partial
+    if cancel_check is not None:
+        cancel_check()
     return np.asarray(result.reshape(angle_shape), dtype=complex)
 
 
@@ -192,7 +200,9 @@ def calculate_array_gain_metrics(
     weights = np.asarray(complex_weights, dtype=complex)
     mask = np.asarray(active_mask, dtype=bool)
     if not (y_array.shape == z_array.shape == weights.shape == mask.shape):
-        raise ValueError("Coordinates, weights, and active mask must have matching shapes.")
+        raise ValueError(
+            "Coordinates, weights, and active mask must have matching shapes."
+        )
     if weights.size == 0:
         raise ValueError("Relative array gain requires at least one element.")
     if np.any(~np.isfinite(np.abs(weights))):
@@ -314,13 +324,22 @@ def _interpolate_crossing(
 def calculate_pattern_metrics(
     pattern: ArrayLike,
     angles_rad: ArrayLike,
+    *,
+    peak_index: int | None = None,
 ) -> PatternMetrics:
-    """Calculate interpolated HPBW, FNBW, and peak sidelobe level."""
+    """Calculate interpolated HPBW, FNBW, and peak sidelobe level.
+
+    Callers may supply the intended main-lobe index for target-centered cuts.
+    This avoids choosing an equal-height antipodal or grating lobe merely
+    because it occurs first in the sampled axis.
+    """
 
     values = np.asarray(pattern, dtype=complex)
     angles = np.asarray(angles_rad, dtype=float)
     if values.ndim != 1 or angles.ndim != 1 or values.size != angles.size:
-        raise ValueError("Pattern and angle arrays must be one-dimensional and equal in size.")
+        raise ValueError(
+            "Pattern and angle arrays must be one-dimensional and equal in size."
+        )
     if values.size == 0 or np.any(~np.isfinite(angles)):
         raise ValueError("Pattern metrics require finite, non-empty angle samples.")
     if values.size > 1 and np.any(np.diff(angles) <= 0):
@@ -328,7 +347,12 @@ def calculate_pattern_metrics(
     magnitude = np.abs(values)
     if np.any(~np.isfinite(magnitude)):
         raise ValueError("Pattern contains non-finite values.")
-    peak_index = int(np.argmax(magnitude))
+    if peak_index is None:
+        peak_index = int(np.argmax(magnitude))
+    elif not 0 <= peak_index < values.size:
+        raise ValueError("Peak index is outside the pattern.")
+    else:
+        peak_index = int(peak_index)
     peak = float(magnitude[peak_index])
 
     hpbw_left: int | None = None
@@ -366,33 +390,23 @@ def calculate_pattern_metrics(
                 values.size - 1,
                 peak_index + (peak_index - int(hpbw_left)),
             )
-            hpbw_deg = float(
-                2.0 * np.degrees(angles[peak_index] - hpbw_left_angle)
-            )
+            hpbw_deg = float(2.0 * np.degrees(angles[peak_index] - hpbw_left_angle))
         elif hpbw_right_angle is not None:
             hpbw_left_angle = 2.0 * angles[peak_index] - hpbw_right_angle
             hpbw_left = max(
                 0,
                 peak_index - (int(hpbw_right) - peak_index),
             )
-            hpbw_deg = float(
-                2.0 * np.degrees(hpbw_right_angle - angles[peak_index])
-            )
+            hpbw_deg = float(2.0 * np.degrees(hpbw_right_angle - angles[peak_index]))
 
     pattern_db = normalize_pattern_db(values)
     null_left, null_right = find_first_null(pattern_db, peak_index)
     if null_left is not None and null_right is not None:
-        fnbw_deg = float(
-            np.degrees(angles[null_right] - angles[null_left])
-        )
+        fnbw_deg = float(np.degrees(angles[null_right] - angles[null_left]))
     elif null_right is not None:
-        fnbw_deg = float(
-            2.0 * np.degrees(angles[null_right] - angles[peak_index])
-        )
+        fnbw_deg = float(2.0 * np.degrees(angles[null_right] - angles[peak_index]))
     elif null_left is not None:
-        fnbw_deg = float(
-            2.0 * np.degrees(angles[peak_index] - angles[null_left])
-        )
+        fnbw_deg = float(2.0 * np.degrees(angles[peak_index] - angles[null_left]))
     else:
         fnbw_deg = None
 
@@ -422,9 +436,7 @@ def calculate_pattern_metrics(
         hpbw_left_index=hpbw_left,
         hpbw_right_index=hpbw_right,
         hpbw_left_angle_deg=(
-            float(np.degrees(hpbw_left_angle))
-            if hpbw_left_angle is not None
-            else None
+            float(np.degrees(hpbw_left_angle)) if hpbw_left_angle is not None else None
         ),
         hpbw_right_angle_deg=(
             float(np.degrees(hpbw_right_angle))

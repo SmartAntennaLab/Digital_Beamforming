@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -11,30 +10,33 @@ import streamlit as st
 from beamforming import get_steering_limits
 from device_settings import (
     COORDINATE_OPTIONS,
-    DEFAULT_DEVICE_SETTINGS,
-    DEVICE_SETTING_KEYS,
     ELEMENT_OPTIONS,
     GEOMETRY_OPTIONS,
     PHASE_BIT_OPTIONS,
     SCALE_OPTIONS,
     TAPER_OPTIONS,
-    collect_device_settings,
-    decode_share_token,
-    encode_share_token,
-    sanitize_device_settings,
-    settings_envelope,
 )
-from device_storage import mount_device_storage
 from model_options import (
     COORDINATE_LABELS,
     ELEMENT_PATTERN_LABELS,
     GEOMETRY_LABELS,
+    NULL_OPTIMIZATION_MODE_LABELS,
+    NULL_OPTIMIZATION_MODE_OPTIONS,
     PHASE_BIT_LABELS,
     SCALE_LABELS,
     TAPER_LABELS,
     option_label,
 )
 from resource_policy import ResourcePolicy, resource_limit_message
+from settings_storage import (
+    apply_persistent_settings,
+    initialize_settings_storage,
+    next_storage_command,
+    request_device_settings_clear,
+    request_device_settings_save,
+    request_share_link,
+)
+from scan_controls import render_scan_controls
 from simulation import SimulationConfig
 
 
@@ -50,145 +52,12 @@ class SettingsPanelResult:
     elevation_range: tuple[float, float]
     elevation_steps: int
     scan_delay: float
+    scan_mode: str
     resource_error: str | None
 
 
-def apply_persistent_settings(settings: Mapping[str, object]) -> None:
-    """Hydrate widget state before any persistent widget is instantiated."""
-
-    for key, value in sanitize_device_settings(settings).items():
-        st.session_state[key] = value
-
-
-def next_storage_command(action: str, payload: object | None = None) -> None:
-    """Queue one idempotent browser-storage command for the next rerun."""
-
-    previous = st.session_state.get("_device_storage_command", {})
-    command_id = int(previous.get("id", 0)) + 1
-    command: dict[str, object] = {"id": command_id, "action": action}
-    if payload is not None:
-        command["payload"] = payload
-    st.session_state["_device_storage_command"] = command
-
-
-def request_device_settings_save() -> None:
-    """Save the submitted widget state in this browser only."""
-
-    settings = collect_device_settings(st.session_state)
-    next_storage_command("save", settings_envelope(settings))
-    st.session_state["_device_settings_applied"] = True
-    if "settings" in st.query_params:
-        st.query_params.clear()
-        st.session_state["_applied_query_signature"] = None
-
-
-def request_device_settings_clear() -> None:
-    """Clear browser storage and return persistent widgets to defaults."""
-
-    for key in DEVICE_SETTING_KEYS:
-        st.session_state.pop(key, None)
-    st.session_state["is_scanning"] = False
-    st.session_state["scan_idx"] = 0
-    st.session_state["_device_settings_applied"] = True
-    st.session_state["_applied_query_signature"] = None
-    st.query_params.clear()
-    next_storage_command("clear")
-
-
-def request_share_link() -> None:
-    """Put a validated snapshot in one explicit URL query parameter."""
-
-    token = encode_share_token(collect_device_settings(st.session_state))
-    st.query_params.clear()
-    st.query_params["settings"] = token
-    st.session_state["_applied_query_signature"] = f"share:{token}"
-    st.session_state["_settings_notice"] = (
-        "info",
-        "현재 주소가 공유 링크로 갱신되었습니다. 주소창의 URL을 복사하세요.",
-    )
-
-
 def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
-    # Session state is deliberately small; numerical arrays live in bounded caches.
-    st.session_state.setdefault("is_scanning", False)
-    st.session_state.setdefault("scan_idx", 0)
-    st.session_state.setdefault("scan_completed", False)
-    st.session_state.setdefault(
-        "_device_storage_command",
-        {"id": 0, "action": "load"},
-    )
-    st.session_state.setdefault("_device_settings_applied", False)
-    for setting_key, default_value in DEFAULT_DEVICE_SETTINGS.items():
-        st.session_state.setdefault(setting_key, default_value)
-
-    # Explicit share links take precedence over this browser's stored defaults.
-    share_token = st.query_params.get("settings")
-    query_signature: str | None = None
-    query_settings: dict[str, object] = {}
-    if isinstance(share_token, str) and share_token:
-        query_signature = f"share:{share_token}"
-        query_settings = decode_share_token(share_token)
-    else:
-        legacy_query = {
-            key: st.query_params.get(key)
-            for key in DEVICE_SETTING_KEYS
-            if key in st.query_params
-        }
-        if legacy_query:
-            query_signature = f"legacy:{sorted(legacy_query.items())!r}"
-            query_settings = sanitize_device_settings(legacy_query)
-
-    if (
-        query_signature is not None
-        and st.session_state.get("_applied_query_signature") != query_signature
-    ):
-        if query_settings:
-            apply_persistent_settings(query_settings)
-            st.session_state["_device_settings_applied"] = True
-            st.session_state["_settings_notice"] = (
-                "info",
-                "URL에서 시뮬레이터 설정을 불러왔습니다.",
-            )
-            if query_signature.startswith("legacy:"):
-                st.query_params.clear()
-        else:
-            st.session_state["_settings_notice"] = (
-                "warning",
-                "공유 링크 설정이 손상되었거나 지원하지 않는 형식입니다.",
-            )
-        st.session_state["_applied_query_signature"] = query_signature
-
-    storage_result = mount_device_storage(st.session_state["_device_storage_command"])
-    loaded_settings = getattr(storage_result, "loaded_settings", None)
-    if (
-        not st.session_state["_device_settings_applied"]
-        and isinstance(loaded_settings, Mapping)
-    ):
-        apply_persistent_settings(loaded_settings)
-        st.session_state["_device_settings_applied"] = True
-
-    storage_status = getattr(storage_result, "status", None)
-    if isinstance(storage_status, Mapping):
-        status_id = storage_status.get("id")
-        if status_id != st.session_state.get("_device_storage_status_seen"):
-            st.session_state["_device_storage_status_seen"] = status_id
-            action = storage_status.get("action")
-            if storage_status.get("ok") and action == "save":
-                st.session_state["_settings_notice"] = (
-                    "success",
-                    "현재 설정을 이 기기의 브라우저에 저장했습니다.",
-                )
-            elif storage_status.get("ok") and action == "clear":
-                st.session_state["_settings_notice"] = (
-                    "success",
-                    "이 기기에 저장된 설정을 삭제하고 기본값으로 초기화했습니다.",
-                )
-            elif not storage_status.get("ok"):
-                st.session_state["_settings_notice"] = (
-                    "warning",
-                    "브라우저 저장소를 사용할 수 없습니다. 브라우저 개인정보 보호 설정을 확인하세요.",
-                )
-
+    initialize_settings_storage()
 
     def handle_geometry_change() -> None:
         """Stop an active sweep before applying an immediately changed geometry."""
@@ -196,9 +65,9 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
         st.session_state.is_scanning = False
         st.session_state.scan_idx = 0
         st.session_state.scan_completed = False
+        st.session_state.scan_show_last_frame = False
 
-
-    st.title("📡 디지털 빔포밍 시뮬레이터 v1.4")
+    st.title("📡 디지털 빔포밍 시뮬레이터 v1.5")
     st.markdown(
         "배열·조향 조건을 제출한 뒤 활성 탭의 빔 패턴과 안테나 상태를 확인하세요."
     )
@@ -378,6 +247,18 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
             key="enable_null",
             persist_state="session",
         )
+        null_count = int(
+            st.number_input(
+                "간섭원 수",
+                min_value=1,
+                max_value=8,
+                step=1,
+                key="null_count",
+                persist_state="session",
+                help="목표 응답 제약을 제외하고 동시에 억압할 간섭 방향 수입니다.",
+            )
+        )
+        st.markdown("##### 간섭원 1")
         null_azimuth = st.slider(
             "간섭 Azimuth 각도 (°)",
             -90.0,
@@ -409,6 +290,97 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
                 key="null_elevation",
                 persist_state="session",
             )
+        null_suppression = st.slider(
+            "간섭원 1 요구 억압량 (dB)",
+            0.0,
+            120.0,
+            step=1.0,
+            key="null_1_suppression_db",
+            persist_state="session",
+        )
+        null_constraints = [
+            (float(null_azimuth), float(null_elevation), float(null_suppression))
+        ]
+        for null_index in range(2, null_count + 1):
+            st.markdown(f"##### 간섭원 {null_index}")
+            indexed_azimuth = st.slider(
+                f"간섭원 {null_index} Azimuth 각도 (°)",
+                -90.0,
+                90.0,
+                step=1.0,
+                key=f"null_{null_index}_azimuth",
+                persist_state="session",
+            )
+            if elevation_locked:
+                indexed_elevation = st.slider(
+                    f"간섭원 {null_index} Elevation 각도 (°)",
+                    -90.0,
+                    90.0,
+                    0.0,
+                    1.0,
+                    disabled=True,
+                    key=f"fixed_null_{null_index}_elevation",
+                    help="이 배열 형상에서는 간섭 Elevation을 0°로 고정합니다.",
+                )
+            else:
+                indexed_elevation = st.slider(
+                    f"간섭원 {null_index} Elevation 각도 (°)",
+                    -90.0,
+                    90.0,
+                    step=1.0,
+                    key=f"null_{null_index}_elevation",
+                    persist_state="session",
+                )
+            indexed_suppression = st.slider(
+                f"간섭원 {null_index} 요구 억압량 (dB)",
+                0.0,
+                120.0,
+                step=1.0,
+                key=f"null_{null_index}_suppression_db",
+                persist_state="session",
+            )
+            null_constraints.append(
+                (
+                    float(indexed_azimuth),
+                    float(indexed_elevation),
+                    float(indexed_suppression),
+                )
+            )
+        null_optimization_mode = st.selectbox(
+            "Null 최적화 방식",
+            NULL_OPTIMIZATION_MODE_OPTIONS,
+            format_func=lambda value: option_label(
+                value,
+                NULL_OPTIMIZATION_MODE_LABELS,
+            ),
+            key="null_optimization_mode",
+            persist_state="session",
+            help=(
+                "위상 전용은 테이퍼 진폭을 고정하고 위상만 반복 최적화합니다. "
+                "진폭·위상 방식은 SVD 복소 가중치를 사용합니다."
+            ),
+        )
+        enable_amplitude_limit = st.checkbox(
+            "최대 소자 진폭 제한",
+            key="enable_amplitude_limit",
+            persist_state="session",
+        )
+        max_element_amplitude_value = st.number_input(
+            "최대 소자 진폭 |w|max",
+            min_value=0.05,
+            max_value=10.0,
+            step=0.05,
+            format="%.2f",
+            disabled=not enable_amplitude_limit,
+            key="max_element_amplitude",
+            persist_state="session",
+            help="복소 가중치의 정규화 진폭 상한입니다. 상한에 도달한 소자를 별도 표시합니다.",
+        )
+        maximum_element_amplitude = (
+            float(max_element_amplitude_value)
+            if enable_null and enable_amplitude_limit
+            else None
+        )
         st.markdown("##### 시각화")
         scale_option = st.radio(
             "3D 빔 패턴 스케일",
@@ -441,9 +413,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
             on_click=request_device_settings_save,
         )
 
-    st.sidebar.caption(
-        "입력값은 서버가 아닌 현재 기기의 이 브라우저에만 저장됩니다."
-    )
+    st.sidebar.caption("입력값은 서버가 아닌 현재 기기의 이 브라우저에만 저장됩니다.")
     st.sidebar.caption(
         f"세션 계산 상한: 소자 {policy.max_elements:,}개, 스캔 "
         f"{policy.max_scan_frames:,}프레임, 누적 "
@@ -471,10 +441,16 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
     )
     if not steering_limits.azimuth_controllable:
         target_azimuth = 0.0
-        null_azimuth = 0.0
+        null_constraints = [
+            (0.0, elevation, suppression)
+            for _, elevation, suppression in null_constraints
+        ]
     if not steering_limits.elevation_controllable:
         target_elevation = 0.0
-        null_elevation = 0.0
+        null_constraints = [
+            (azimuth, 0.0, suppression) for azimuth, _, suppression in null_constraints
+        ]
+    null_azimuth, null_elevation, _ = null_constraints[0]
     if azimuth_only_geometry:
         st.sidebar.info(
             "ULA/UCA에서는 수직 안테나 수(M)를 1, 목표·간섭 Elevation을 0°로 "
@@ -488,68 +464,21 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
     if apply_settings:
         st.session_state.is_scanning = False
         st.session_state.scan_idx = 0
+        st.session_state.scan_show_last_frame = False
 
-    with st.sidebar.expander("📡 자동 빔 스캔", expanded=False):
-        with st.form("scan_settings", border=False):
-            azimuth_range = st.slider(
-                "Azimuth 스캔 범위 (°)", -90.0, 90.0, step=1.0,
-                disabled=not steering_limits.azimuth_controllable,
-                key="scan_azimuth_range",
-                persist_state="session",
-            )
-            azimuth_steps = st.slider(
-                "Azimuth 스텝 수", 3, 50,
-                disabled=not steering_limits.azimuth_controllable,
-                key="scan_azimuth_steps",
-                persist_state="session",
-            )
-            elevation_range = st.slider(
-                "Elevation 스캔 범위 (°)", -90.0, 90.0, step=1.0,
-                disabled=not steering_limits.elevation_controllable,
-                key="scan_elevation_range",
-                persist_state="session",
-            )
-            elevation_steps = st.slider(
-                "Elevation 스텝 수", 2, 20,
-                disabled=not steering_limits.elevation_controllable,
-                key="scan_elevation_steps",
-                persist_state="session",
-            )
-            scan_delay = st.slider(
-                "프레임 간격 (초)",
-                0.1,
-                2.0,
-                step=0.1,
-                key="scan_delay",
-                persist_state="session",
-            )
-            scan_buttons = st.columns(2)
-            start_scan = scan_buttons[0].form_submit_button(
-                "▶️ 시작",
-                disabled=st.session_state.is_scanning
-                or not (
-                    steering_limits.azimuth_controllable
-                    or steering_limits.elevation_controllable
-                ),
-                width="stretch",
-                on_click=request_device_settings_save,
-            )
-            stop_scan = scan_buttons[1].form_submit_button(
-                "⏹️ 중지",
-                disabled=not st.session_state.is_scanning,
-                width="stretch",
-                on_click=request_device_settings_save,
-            )
-
-    if not steering_limits.azimuth_controllable:
-        azimuth_range, azimuth_steps = (0.0, 0.0), 1
-    if not steering_limits.elevation_controllable:
-        elevation_range, elevation_steps = (0.0, 0.0), 1
-    if start_scan:
-        st.session_state.is_scanning = True
-        st.session_state.scan_idx = 0
-    if stop_scan:
-        st.session_state.is_scanning = False
+    scan_controls = render_scan_controls(
+        policy,
+        geometry=geometry,
+        vertical_count=vertical_count,
+        horizontal_count=horizontal_count,
+        steering_limits=steering_limits,
+    )
+    azimuth_range = scan_controls.azimuth_range
+    azimuth_steps = scan_controls.azimuth_steps
+    elevation_range = scan_controls.elevation_range
+    elevation_steps = scan_controls.elevation_steps
+    scan_delay = scan_controls.scan_delay
+    scan_mode = scan_controls.scan_mode
 
     config = SimulationConfig(
         frequency_ghz=frequency_ghz,
@@ -567,6 +496,9 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
         enable_null_steering=enable_null,
         null_azimuth_deg=null_azimuth,
         null_elevation_deg=null_elevation,
+        null_constraints_deg=tuple(null_constraints),
+        null_optimization_mode=null_optimization_mode,
+        maximum_element_amplitude=maximum_element_amplitude,
     )
     requested_scan_frames = (
         azimuth_steps * elevation_steps if st.session_state.is_scanning else 1
@@ -583,7 +515,6 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
         st.session_state.scan_idx = 0
         st.sidebar.error(resource_error)
 
-
     return SettingsPanelResult(
         config=config,
         scale_option=scale_option,
@@ -595,5 +526,6 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
         elevation_range=elevation_range,
         elevation_steps=elevation_steps,
         scan_delay=scan_delay,
+        scan_mode=scan_mode,
         resource_error=resource_error,
     )

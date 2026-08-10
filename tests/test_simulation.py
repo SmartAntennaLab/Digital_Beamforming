@@ -7,10 +7,13 @@ from simulation import (
     SURFACE_PATTERN_SCHEMA_VERSION,
     SimulationConfig,
     build_simulation_state,
+    calculate_great_circle_cuts,
     calculate_pattern_cuts,
     calculate_surface_pattern,
+    estimate_scan_timing,
     pattern_cut_local_sample_count,
     scan_direction,
+    scan_surface_sampling,
     summarize_array_layout,
     surface_local_sample_count,
     surface_resolution,
@@ -71,6 +74,29 @@ class SimulationStateTests(unittest.TestCase):
         self.assertEqual(first.gain_metrics.active_elements, 24)
         np.testing.assert_array_equal(first.active_mask, second.active_mask)
         np.testing.assert_allclose(first.complex_weights, second.complex_weights)
+
+    def test_state_passes_multiple_practical_null_constraints_to_solver(self):
+        state = build_simulation_state(
+            SimulationConfig(
+                vertical_count=1,
+                horizontal_count=16,
+                geometry="ULA",
+                enable_null_steering=True,
+                null_constraints_deg=(
+                    (-25.0, 0.0, 25.0),
+                    (32.0, 0.0, 25.0),
+                ),
+                null_optimization_mode="phase_only",
+                maximum_element_amplitude=1.0,
+            )
+        )
+
+        result = state.weight_result
+        self.assertEqual(len(result.null_directions_rad), 2)
+        self.assertEqual(result.null_required_suppression_db, (25.0, 25.0))
+        self.assertEqual(result.optimization_mode, "phase_only")
+        self.assertEqual(result.maximum_element_amplitude, 1.0)
+        self.assertEqual(result.null_requirement_met, (True, True))
 
     def test_uha_state_counts_only_physical_elements(self):
         state = build_simulation_state(
@@ -185,12 +211,11 @@ class SimulationStateTests(unittest.TestCase):
                 target_elevation_deg=5.0,
             )
         )
-        cuts = calculate_pattern_cuts(
-            state, sample_count=37, max_chunk_entries=11
+        cuts = calculate_pattern_cuts(state, sample_count=37, max_chunk_entries=11)
+        great_circle_cuts = calculate_great_circle_cuts(
+            state, sample_count=73, max_chunk_entries=11
         )
-        surface = calculate_surface_pattern(
-            state, resolution=9, max_chunk_entries=13
-        )
+        surface = calculate_surface_pattern(state, resolution=9, max_chunk_entries=13)
 
         self.assertGreater(cuts.azimuth_pattern.size, 37)
         self.assertGreater(cuts.elevation_pattern.size, 37)
@@ -206,7 +231,50 @@ class SimulationStateTests(unittest.TestCase):
         self.assertGreater(surface.pattern.shape[1], 9)
         self.assertEqual(surface.schema_version, SURFACE_PATTERN_SCHEMA_VERSION)
         self.assertTrue(np.all(np.isfinite(cuts.azimuth_pattern_db)))
+        self.assertTrue(np.all(np.isfinite(great_circle_cuts.horizontal_pattern_db)))
+        self.assertTrue(
+            np.any(np.isclose(great_circle_cuts.horizontal_offsets_rad, 0.0))
+        )
         self.assertTrue(np.all(np.isfinite(surface.pattern_db)))
+
+    def test_broadside_great_circle_and_coordinate_hpbw_match(self):
+        state = build_simulation_state(
+            SimulationConfig(
+                vertical_count=8,
+                horizontal_count=16,
+                geometry="UPA",
+            )
+        )
+        coordinate = calculate_pattern_cuts(state, sample_count=721)
+        physical = calculate_great_circle_cuts(state, sample_count=721)
+
+        self.assertAlmostEqual(
+            coordinate.azimuth_metrics.hpbw_deg,
+            physical.horizontal_metrics.hpbw_deg,
+            delta=0.02,
+        )
+        self.assertAlmostEqual(
+            coordinate.elevation_metrics.hpbw_deg,
+            physical.vertical_metrics.hpbw_deg,
+            delta=0.02,
+        )
+
+    def test_large_elevation_distinguishes_coordinate_and_physical_hpbw(self):
+        state = build_simulation_state(
+            SimulationConfig(
+                vertical_count=1,
+                horizontal_count=32,
+                geometry="ULA",
+                target_elevation_deg=60.0,
+            )
+        )
+        coordinate = calculate_pattern_cuts(state, sample_count=721)
+        physical = calculate_great_circle_cuts(state, sample_count=721)
+
+        self.assertGreater(
+            coordinate.azimuth_metrics.hpbw_deg,
+            1.8 * physical.horizontal_metrics.hpbw_deg,
+        )
 
     def test_pattern_cuts_include_exact_target_and_refine_large_array_beam(self):
         state = build_simulation_state(
@@ -235,12 +303,8 @@ class SimulationStateTests(unittest.TestCase):
             <= np.radians(cuts.elevation_refinement_half_width_deg)
         )
 
-        self.assertTrue(
-            np.any(np.isclose(cuts.azimuth_angles_rad, target_azimuth))
-        )
-        self.assertTrue(
-            np.any(np.isclose(cuts.elevation_angles_rad, target_elevation))
-        )
+        self.assertTrue(np.any(np.isclose(cuts.azimuth_angles_rad, target_azimuth)))
+        self.assertTrue(np.any(np.isclose(cuts.elevation_angles_rad, target_elevation)))
         self.assertEqual(cuts.base_sample_count, 181)
         self.assertEqual(cuts.local_sample_count, 129)
         self.assertLess(
@@ -306,9 +370,7 @@ class SimulationStateTests(unittest.TestCase):
         self.assertTrue(
             np.any(np.isclose(surface.azimuth_angle_rad[:, 0], target_azimuth))
         )
-        self.assertTrue(
-            np.any(np.isclose(surface.polar_angle_rad[0, :], target_polar))
-        )
+        self.assertTrue(np.any(np.isclose(surface.polar_angle_rad[0, :], target_polar)))
         self.assertGreaterEqual(
             surface.sampled_peak_magnitude + 1e-10,
             surface.target_response_magnitude,
@@ -324,9 +386,7 @@ class SimulationStateTests(unittest.TestCase):
         self.assertAlmostEqual(
             surface.target_response_magnitude, expected_peak, places=8
         )
-        self.assertAlmostEqual(
-            surface.sampled_peak_magnitude, expected_peak, places=8
-        )
+        self.assertAlmostEqual(surface.sampled_peak_magnitude, expected_peak, places=8)
         self.assertEqual(float(np.max(surface.pattern_db)), 0.0)
 
     def test_32_by_16_boresight_surface_resolves_the_main_lobe(self):
@@ -352,14 +412,57 @@ class SimulationStateTests(unittest.TestCase):
         state = build_simulation_state(
             SimulationConfig(vertical_count=64, horizontal_count=64)
         )
-        cuts = calculate_pattern_cuts(
-            state, sample_count=181, max_chunk_entries=4_096
-        )
+        cuts = calculate_pattern_cuts(state, sample_count=181, max_chunk_entries=4_096)
         self.assertGreater(cuts.azimuth_pattern.size, 181)
         self.assertTrue(np.all(np.isfinite(cuts.azimuth_pattern)))
 
 
 class ScanTests(unittest.TestCase):
+    def test_scan_modes_select_preview_work_only_while_running(self):
+        preview = scan_surface_sampling(4096, "preview_3d", scanning=True)
+        full = scan_surface_sampling(4096, "full_3d", scanning=True)
+        two_d = scan_surface_sampling(4096, "2d", scanning=True)
+        stationary = scan_surface_sampling(4096, "2d", scanning=False)
+
+        self.assertTrue(preview.render_3d)
+        self.assertEqual(preview.quality, "preview")
+        self.assertLess(preview.resolution, full.resolution)
+        self.assertLess(preview.local_sample_count, full.local_sample_count)
+        self.assertFalse(two_d.render_3d)
+        self.assertIsNone(two_d.resolution)
+        self.assertEqual(stationary, full)
+
+    def test_scan_timing_is_calibrated_and_includes_final_full_frame(self):
+        full = estimate_scan_timing(4096, 100, "full_3d", 0.1)
+        preview = estimate_scan_timing(4096, 100, "preview_3d", 0.1)
+        two_d = estimate_scan_timing(4096, 100, "2d", 0.1)
+
+        self.assertAlmostEqual(full.frame_seconds, 0.85)
+        self.assertEqual(full.finalization_seconds, 0.0)
+        self.assertLess(preview.frame_seconds, full.frame_seconds)
+        self.assertLess(two_d.frame_seconds, preview.frame_seconds)
+        self.assertAlmostEqual(preview.finalization_seconds, 0.85)
+        self.assertAlmostEqual(two_d.finalization_seconds, 0.85)
+        self.assertLess(preview.total_seconds, full.total_seconds)
+
+        rate_limited = estimate_scan_timing(
+            4096,
+            100,
+            "preview_3d",
+            0.1,
+            session_calculations_per_minute=120,
+            session_burst=8,
+        )
+        self.assertGreater(rate_limited.total_seconds, preview.total_seconds)
+
+    def test_scan_mode_and_timing_inputs_are_validated(self):
+        with self.assertRaises(ValueError):
+            scan_surface_sampling(16, "unknown", scanning=True)
+        with self.assertRaises(ValueError):
+            estimate_scan_timing(16, 0, "2d", 0.2)
+        with self.assertRaises(ValueError):
+            estimate_scan_timing(16, 2, "2d", float("nan"))
+
     def test_scan_direction_is_azimuth_first_raster(self):
         expected = (
             (-30.0, -10.0),

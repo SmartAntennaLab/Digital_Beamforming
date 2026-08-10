@@ -14,6 +14,7 @@ from array_math import parse_phase_bits, quantize_phases, steering_vector
 
 FloatArray: TypeAlias = NDArray[np.float64]
 ComplexArray: TypeAlias = NDArray[np.complex128]
+BoolArray: TypeAlias = NDArray[np.bool_]
 
 
 @dataclass(frozen=True)
@@ -46,13 +47,21 @@ class BeamformingWeights:
     constraint_count: int
     condition_number: float | None
     null_directions_rad: tuple[tuple[float, float], ...]
+    null_required_suppression_db: tuple[float, ...]
     continuous_null_depths_db: tuple[float | None, ...]
     null_depths_db: tuple[float | None, ...]
+    continuous_null_requirement_met: tuple[bool | None, ...]
+    null_requirement_met: tuple[bool | None, ...]
     continuous_diagnostics: ConstraintDiagnostics
     final_diagnostics: ConstraintDiagnostics
     quantization_target_degradation_db: float | None
     quantization_null_degradation_db: tuple[float | None, ...]
     quantization_constraint_degradation_db: float | None
+    optimization_mode: str
+    maximum_element_amplitude: float | None
+    saturated_element_mask: BoolArray
+    saturated_element_count: int
+    optimizer_iterations: int
     diagnostic_message: str | None
 
 
@@ -99,9 +108,7 @@ def _constraint_diagnostics(
     null_residuals = residual_magnitudes[1:]
 
     residual_norm_value = float(np.linalg.norm(residual))
-    residual_norm = (
-        residual_norm_value if np.isfinite(residual_norm_value) else None
-    )
+    residual_norm = residual_norm_value if np.isfinite(residual_norm_value) else None
     target_scale = _finite_magnitude(desired_response[0])
     if target_scale is None or target_scale <= 0.0:
         target_relative_error = None
@@ -149,6 +156,84 @@ def _residual_degradation_db(
     return float(20.0 * np.log10(final_level / continuous_level))
 
 
+def _requirement_status(
+    depths_db: tuple[float | None, ...],
+    required_db: tuple[float, ...],
+) -> tuple[bool | None, ...]:
+    return tuple(
+        None if depth is None else bool(depth + 1.0e-9 >= requirement)
+        for depth, requirement in zip(depths_db, required_db, strict=True)
+    )
+
+
+def _phase_only_optimize(
+    constraint_matrix: ComplexArray,
+    desired_response: ComplexArray,
+    fixed_amplitudes: FloatArray,
+    initial_weights: ComplexArray,
+    required_suppression_db: tuple[float, ...],
+    *,
+    max_iterations: int = 400,
+) -> tuple[ComplexArray, int]:
+    """Minimize weighted target/null residuals with fixed element magnitudes."""
+
+    target_scale = float(np.abs(desired_response[0]))
+    if target_scale <= 0.0 or not np.isfinite(target_scale):
+        return np.asarray(initial_weights, dtype=complex).copy(), 0
+
+    null_weights = np.asarray(
+        [
+            10.0 ** (min(requirement, 120.0) / 20.0)
+            for requirement in required_suppression_db
+        ],
+        dtype=float,
+    )
+    target_weight = max(100.0, float(np.max(null_weights, initial=1.0)))
+    row_weights = np.concatenate(([target_weight], null_weights))
+    weighted_matrix = constraint_matrix * row_weights[:, None] / target_scale
+    weighted_desired = desired_response * row_weights / target_scale
+
+    phases = np.angle(initial_weights)
+    weights = fixed_amplitudes * np.exp(1j * phases)
+
+    def objective(candidate: ComplexArray) -> float:
+        residual = weighted_matrix @ candidate - weighted_desired
+        return float(np.vdot(residual, residual).real)
+
+    best_weights = np.asarray(weights, dtype=complex).copy()
+    best_objective = objective(best_weights)
+    step = 0.25
+    completed_iterations = 0
+    for iteration in range(max_iterations):
+        residual = weighted_matrix @ weights - weighted_desired
+        gradient = -2.0 * np.imag(
+            weights * (weighted_matrix.T @ np.conjugate(residual))
+        )
+        gradient_scale = float(np.max(np.abs(gradient), initial=0.0))
+        if not np.isfinite(gradient_scale) or gradient_scale < 1.0e-12:
+            break
+
+        candidate_phases = phases - step * gradient / gradient_scale
+        candidate_weights = fixed_amplitudes * np.exp(1j * candidate_phases)
+        candidate_objective = objective(candidate_weights)
+        if candidate_objective < best_objective:
+            phases = candidate_phases
+            weights = candidate_weights
+            best_weights = np.asarray(candidate_weights, dtype=complex).copy()
+            improvement = best_objective - candidate_objective
+            best_objective = candidate_objective
+            step = min(0.5, step * 1.05)
+            completed_iterations = iteration + 1
+            if improvement <= 1.0e-12 * max(1.0, best_objective):
+                break
+        else:
+            step *= 0.5
+            if step < 1.0e-8:
+                break
+
+    return best_weights, completed_iterations
+
+
 def compute_beamforming_weights(
     y: ArrayLike,
     z: ArrayLike,
@@ -160,9 +245,12 @@ def compute_beamforming_weights(
     phase_bits: int | str | None = None,
     null_direction_rad: tuple[float, float] | None = None,
     null_directions_rad: Sequence[tuple[float, float]] | None = None,
+    null_required_suppression_db: Sequence[float] | None = None,
+    maximum_element_amplitude: float | None = None,
+    optimization_mode: str = "amplitude_phase",
     singular_tolerance: float = 1e-6,
 ) -> BeamformingWeights:
-    """Solve target/null constraints with a direct SVD minimum-norm update."""
+    """Solve practical target/null constraints with bounded complex weights."""
 
     y_array = np.asarray(y, dtype=float)
     z_array = np.asarray(z, dtype=float)
@@ -173,8 +261,19 @@ def compute_beamforming_weights(
         raise ValueError("Amplitude weights must be finite and non-negative.")
     if singular_tolerance <= 0.0 or not np.isfinite(singular_tolerance):
         raise ValueError("Singular tolerance must be finite and positive.")
+    if optimization_mode not in {"amplitude_phase", "phase_only"}:
+        raise ValueError("Unsupported null optimization mode.")
+    if maximum_element_amplitude is not None:
+        maximum_element_amplitude = float(maximum_element_amplitude)
+        if (
+            not np.isfinite(maximum_element_amplitude)
+            or maximum_element_amplitude <= 0.0
+        ):
+            raise ValueError("Maximum element amplitude must be finite and positive.")
     if null_direction_rad is not None and null_directions_rad is not None:
-        raise ValueError("Use either null_direction_rad or null_directions_rad, not both.")
+        raise ValueError(
+            "Use either null_direction_rad or null_directions_rad, not both."
+        )
 
     if null_directions_rad is not None:
         null_directions = tuple(
@@ -193,6 +292,20 @@ def compute_beamforming_weights(
     ):
         raise ValueError("Null directions must contain finite angles.")
 
+    if null_required_suppression_db is None:
+        required_suppression = tuple(40.0 for _ in null_directions)
+    else:
+        required_suppression = tuple(
+            float(value) for value in null_required_suppression_db
+        )
+    if len(required_suppression) != len(null_directions):
+        raise ValueError("Each null direction requires one suppression value.")
+    if any(
+        not np.isfinite(value) or not 0.0 <= value <= 300.0
+        for value in required_suppression
+    ):
+        raise ValueError("Required null suppression must be between 0 and 300 dB.")
+
     target_response_vector = steering_vector(
         y_array,
         z_array,
@@ -204,8 +317,14 @@ def compute_beamforming_weights(
         y_array.shape
     )
     amplitude_flat = amplitudes.ravel()
+    fixed_amplitudes = np.asarray(amplitude_flat, dtype=float).copy()
+    if maximum_element_amplitude is not None:
+        fixed_amplitudes = np.minimum(
+            fixed_amplitudes,
+            maximum_element_amplitude,
+        )
     reference_control = np.conjugate(target_response_vector)
-    reference_weights = amplitude_flat * reference_control
+    reference_weights = fixed_amplitudes * reference_control
 
     response_rows = [target_response_vector]
     response_rows.extend(
@@ -228,10 +347,11 @@ def compute_beamforming_weights(
     solver_method = "not_requested"
     constraint_rank: int | None = None
     condition_number: float | None = None
+    optimizer_iterations = 0
     diagnostic_message: str | None = None
 
     if null_directions:
-        control_matrix = constraint_matrix * amplitude_flat[None, :]
+        control_matrix = constraint_matrix * fixed_amplitudes[None, :]
         try:
             left_vectors, singular_values, right_vectors_h = np.linalg.svd(
                 control_matrix,
@@ -248,9 +368,7 @@ def compute_beamforming_weights(
                 float(singular_values[0]) if singular_values.size else 0.0
             )
             rank_threshold = singular_tolerance * largest_singular
-            constraint_rank = int(
-                np.count_nonzero(singular_values > rank_threshold)
-            )
+            constraint_rank = int(np.count_nonzero(singular_values > rank_threshold))
             smallest_singular = (
                 float(singular_values[-1]) if singular_values.size else 0.0
             )
@@ -261,10 +379,7 @@ def compute_beamforming_weights(
                 else float("inf")
             )
             condition_limit = 1.0 / singular_tolerance
-            if (
-                constraint_rank < constraint_count
-                or condition_number > condition_limit
-            ):
+            if constraint_rank < constraint_count or condition_number > condition_limit:
                 solver_method = "svd_rejected"
                 diagnostic_message = (
                     "Null constraint matrix is singular or ill-conditioned "
@@ -278,9 +393,36 @@ def compute_beamforming_weights(
                     projected_residual / singular_values
                 )
                 corrected_control = reference_control + minimum_norm_correction
-                continuous_flat = amplitude_flat * corrected_control
+                unconstrained_weights = fixed_amplitudes * corrected_control
+                if optimization_mode == "phase_only":
+                    initial_weights = fixed_amplitudes * np.exp(
+                        1j * np.angle(unconstrained_weights)
+                    )
+                    continuous_flat, optimizer_iterations = _phase_only_optimize(
+                        constraint_matrix,
+                        desired_response,
+                        fixed_amplitudes,
+                        initial_weights,
+                        required_suppression,
+                    )
+                    solver_method = "phase_only_projected_gradient"
+                else:
+                    continuous_flat = np.asarray(
+                        unconstrained_weights,
+                        dtype=complex,
+                    )
+                    if maximum_element_amplitude is not None:
+                        magnitudes = np.abs(continuous_flat)
+                        bounded_magnitudes = np.minimum(
+                            magnitudes,
+                            maximum_element_amplitude,
+                        )
+                        continuous_flat = bounded_magnitudes * np.exp(
+                            1j * np.angle(continuous_flat)
+                        )
+                        continuous_flat[magnitudes == 0.0] = 0.0
+                    solver_method = "svd_minimum_norm"
                 null_applied = True
-                solver_method = "svd_minimum_norm"
 
     continuous_weights = continuous_flat.reshape(y_array.shape)
     parsed_phase_bits = parse_phase_bits(phase_bits)
@@ -295,6 +437,15 @@ def compute_beamforming_weights(
     else:
         final_weights = continuous_weights.copy()
 
+    if maximum_element_amplitude is None:
+        saturated_flat = np.zeros(amplitude_flat.shape, dtype=bool)
+    else:
+        saturation_threshold = maximum_element_amplitude * (1.0 - 1.0e-9)
+        saturated_flat = (fixed_amplitudes > 0.0) & (
+            np.abs(final_weights.ravel()) >= saturation_threshold
+        )
+    saturated_mask = saturated_flat.reshape(y_array.shape)
+
     continuous_depths = _relative_null_depths_db(
         constraint_matrix,
         np.asarray(continuous_flat, dtype=complex),
@@ -302,6 +453,14 @@ def compute_beamforming_weights(
     final_depths = _relative_null_depths_db(
         constraint_matrix,
         np.asarray(final_weights.ravel(), dtype=complex),
+    )
+    continuous_requirement_met = _requirement_status(
+        continuous_depths,
+        required_suppression,
+    )
+    final_requirement_met = _requirement_status(
+        final_depths,
+        required_suppression,
     )
     continuous_diagnostics = _constraint_diagnostics(
         constraint_matrix,
@@ -329,6 +488,14 @@ def compute_beamforming_weights(
         continuous_diagnostics.constraint_relative_residual_norm,
         final_diagnostics.constraint_relative_residual_norm,
     )
+
+    unmet_count = sum(status is False for status in final_requirement_met)
+    if null_applied and unmet_count:
+        diagnostic_message = (
+            f"{unmet_count}/{len(final_requirement_met)} null directions did not "
+            "meet the requested suppression after practical constraints."
+        )
+
     return BeamformingWeights(
         weights=np.asarray(final_weights, dtype=complex),
         continuous_weights=np.asarray(continuous_weights, dtype=complex),
@@ -342,12 +509,20 @@ def compute_beamforming_weights(
         constraint_count=constraint_count,
         condition_number=condition_number,
         null_directions_rad=null_directions,
+        null_required_suppression_db=required_suppression,
         continuous_null_depths_db=continuous_depths,
         null_depths_db=final_depths,
+        continuous_null_requirement_met=continuous_requirement_met,
+        null_requirement_met=final_requirement_met,
         continuous_diagnostics=continuous_diagnostics,
         final_diagnostics=final_diagnostics,
         quantization_target_degradation_db=quantization_target_degradation,
         quantization_null_degradation_db=quantization_null_degradation,
         quantization_constraint_degradation_db=quantization_constraint_degradation,
+        optimization_mode=optimization_mode,
+        maximum_element_amplitude=maximum_element_amplitude,
+        saturated_element_mask=np.asarray(saturated_mask, dtype=bool),
+        saturated_element_count=int(np.count_nonzero(saturated_mask)),
+        optimizer_iterations=optimizer_iterations,
         diagnostic_message=diagnostic_message,
     )

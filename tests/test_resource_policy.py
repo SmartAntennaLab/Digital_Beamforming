@@ -3,7 +3,10 @@ import unittest
 from unittest.mock import patch
 
 from resource_policy import (
+    HARD_MAX_COMPUTE_SECONDS,
+    HARD_MAX_CONCURRENT_CALCULATIONS,
     HARD_MAX_ELEMENTS,
+    HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE,
     ResourcePolicy,
     estimate_element_count,
     resource_limit_message,
@@ -62,6 +65,36 @@ class ResourcePolicyTests(unittest.TestCase):
             policy = ResourcePolicy.from_environment()
 
         self.assertEqual(policy.max_elements, HARD_MAX_ELEMENTS)
+
+    def test_compute_governor_environment_overrides_are_bounded(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DBF_MAX_CONCURRENT_CALCULATIONS": str(
+                    HARD_MAX_CONCURRENT_CALCULATIONS * 10
+                ),
+                "DBF_COMPUTE_TIMEOUT_SECONDS": str(HARD_MAX_COMPUTE_SECONDS * 10),
+                "DBF_SESSION_CALCULATIONS_PER_MINUTE": str(
+                    HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE * 10
+                ),
+                "DBF_SESSION_BURST": "999",
+            },
+        ):
+            policy = ResourcePolicy.from_environment()
+
+        self.assertEqual(
+            policy.max_concurrent_calculations,
+            HARD_MAX_CONCURRENT_CALCULATIONS,
+        )
+        self.assertEqual(policy.compute_timeout_seconds, HARD_MAX_COMPUTE_SECONDS)
+        self.assertEqual(
+            policy.session_calculations_per_minute,
+            HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE,
+        )
+        self.assertLessEqual(
+            policy.session_burst,
+            policy.session_calculations_per_minute,
+        )
 
 
 if __name__ == "__main__":

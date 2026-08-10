@@ -13,9 +13,9 @@ from device_settings import (
 
 class DeviceSettingsTests(unittest.TestCase):
     def test_storage_bridge_uses_component_v2_and_browser_local_storage(self):
-        source = (
-            Path(__file__).resolve().parents[1] / "device_storage.py"
-        ).read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "device_storage.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("st.components.v2.component", source)
         self.assertIn("window.localStorage", source)
         self.assertNotIn("components.v1", source)
@@ -41,9 +41,7 @@ class DeviceSettingsTests(unittest.TestCase):
         )
 
     def test_uha_minimum_is_clamped_to_restored_maximum(self):
-        sanitized = sanitize_device_settings(
-            {"uha_min_count": 8, "uha_max_count": 4}
-        )
+        sanitized = sanitize_device_settings({"uha_min_count": 8, "uha_max_count": 4})
         self.assertEqual(sanitized["uha_min_count"], 4)
         self.assertEqual(sanitized["uha_max_count"], 4)
 
@@ -64,12 +62,29 @@ class DeviceSettingsTests(unittest.TestCase):
             "uha_min_count": 2,
             "uha_max_count": 5,
             "scan_azimuth_range": (-30.0, 45.0),
+            "scan_mode": "2d",
         }
         token = encode_share_token(settings)
 
         self.assertNotIn("=", token)
         self.assertEqual(decode_share_token(token), settings)
         self.assertEqual(decode_share_token("not-valid-설정"), {})
+
+    def test_scan_mode_is_validated_and_schema_two_remains_readable(self):
+        self.assertEqual(
+            sanitize_device_settings({"scan_mode": "preview_3d"}),
+            {"scan_mode": "preview_3d"},
+        )
+        self.assertEqual(sanitize_device_settings({"scan_mode": "invalid"}), {})
+        self.assertEqual(
+            sanitize_device_settings(
+                {
+                    "schema_version": 2,
+                    "settings": {"scan_delay": 0.4},
+                }
+            ),
+            {"scan_delay": 0.4},
+        )
 
     def test_legacy_translated_options_migrate_to_stable_ids(self):
         sanitized = sanitize_device_settings(
@@ -93,6 +108,26 @@ class DeviceSettingsTests(unittest.TestCase):
                 "scale_option": "linear",
                 "coordinate_option": "rectangular",
             },
+        )
+
+    def test_multiple_null_and_practical_constraint_settings_are_validated(self):
+        settings = {
+            "null_count": 2,
+            "null_1_suppression_db": 35.0,
+            "null_2_azimuth": -25.0,
+            "null_2_elevation": 10.0,
+            "null_2_suppression_db": 50.0,
+            "null_optimization_mode": "phase_only",
+            "enable_amplitude_limit": True,
+            "max_element_amplitude": 0.8,
+        }
+
+        self.assertEqual(sanitize_device_settings(settings), settings)
+        self.assertEqual(decode_share_token(encode_share_token(settings)), settings)
+        self.assertEqual(sanitize_device_settings({"null_count": 9}), {})
+        self.assertEqual(
+            sanitize_device_settings({"null_optimization_mode": "unsupported"}),
+            {},
         )
 
     def test_collect_ignores_transient_session_values(self):

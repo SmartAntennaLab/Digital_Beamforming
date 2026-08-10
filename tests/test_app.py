@@ -15,21 +15,21 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(list(self.app.exception), [])
 
     def test_dynamic_tabs_render_only_the_active_view(self):
-        self.assertEqual(len(self.app.get("plotly_chart")), 3)
+        self.assertEqual(len(self.app.get("plotly_chart")), 5)
         self.assertEqual(len(self.app.metric), 0)
 
         self.app.session_state["active_result_tab"] = "🔍 성능 지표"
         self.app.run()
         self.assertEqual(list(self.app.exception), [])
         self.assertEqual(len(self.app.get("plotly_chart")), 0)
-        self.assertEqual(len(self.app.metric), 10)
+        self.assertEqual(len(self.app.metric), 13)
         self.assertEqual(len(self.app.download_button), 2)
-        performance_metrics = {
-            item.label: item.value for item in self.app.metric
-        }
+        performance_metrics = {item.label: item.value for item in self.app.metric}
         self.assertIn("상대 배열 이득", performance_metrics)
         self.assertTrue(performance_metrics["상대 배열 이득"].endswith(" dB"))
         self.assertNotIn("dBi", performance_metrics["상대 배열 이득"])
+        self.assertIn("목표 방향 Directivity", performance_metrics)
+        self.assertTrue(performance_metrics["목표 방향 Directivity"].endswith(" dBi"))
 
         self.app.session_state["active_result_tab"] = "🔴 안테나 배치 및 위상"
         self.app.run()
@@ -61,8 +61,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
 
     def test_null_metrics_expose_svd_residual_and_weight_diagnostics(self):
         null_checkbox = next(
-            item for item in self.app.checkbox
-            if item.label == "영점 조향 활성화"
+            item for item in self.app.checkbox if item.label == "영점 조향 활성화"
         )
         apply_button = next(
             item for item in self.app.button if item.label == "설정 적용 및 계산"
@@ -83,6 +82,41 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertIn("최종 총 가중치 전력", metric_values)
         self.assertEqual(len(self.app.dataframe), 1)
 
+    def test_multiple_null_ui_reports_requirements_and_saturation(self):
+        next(
+            item for item in self.app.checkbox if item.label == "영점 조향 활성화"
+        ).set_value(True)
+        next(
+            item for item in self.app.number_input if item.label == "간섭원 수"
+        ).set_value(2)
+        next(
+            item for item in self.app.checkbox if item.label == "최대 소자 진폭 제한"
+        ).set_value(True)
+        next(
+            item for item in self.app.selectbox if item.label == "Null 최적화 방식"
+        ).select("amplitude_phase")
+        next(
+            item for item in self.app.button if item.label == "설정 적용 및 계산"
+        ).click()
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertTrue(
+            any(item.label == "간섭원 2 요구 억압량 (dB)" for item in self.app.slider)
+        )
+        self.app.session_state["active_result_tab"] = "🔍 성능 지표"
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        metric_values = {item.label: item.value for item in self.app.metric}
+        self.assertIn("억압 요구 충족", metric_values)
+        self.assertIn("포화 소자", metric_values)
+        self.assertEqual(len(self.app.dataframe), 1)
+        table = self.app.dataframe[0].value
+        self.assertEqual(len(table), 2)
+        self.assertIn("요구 억압", table.columns)
+        self.assertIn("충족 여부", table.columns)
+
     def test_undetected_pattern_metrics_render_as_na(self):
         single_element = AppTest.from_file(str(APP_PATH), default_timeout=30)
         single_element.query_params.update(
@@ -97,12 +131,12 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         single_element.run()
 
         self.assertEqual(list(single_element.exception), [])
-        metric_values = {
-            item.label: item.value for item in single_element.metric
-        }
+        metric_values = {item.label: item.value for item in single_element.metric}
         unavailable_labels = {
-            "3dB Beamwidth (Azimuth)",
-            "3dB Beamwidth (Elevation)",
+            "좌표각 HPBW (Azimuth)",
+            "좌표각 HPBW (Elevation)",
+            "실제 각거리 HPBW (수평 주평면)",
+            "실제 각거리 HPBW (수직 주평면)",
             "First Null Bandwidth (Azimuth)",
             "First Null Bandwidth (Elevation)",
             "Sidelobe Level (Azimuth)",
@@ -128,12 +162,70 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertFalse(self.app.session_state["is_scanning"])
         self.assertEqual(len(self.app.success), 1)
 
+    def test_2d_scan_skips_surface_then_finalizes_last_frame_in_full_quality(self):
+        self.app.session_state["active_result_tab"] = "📊 빔 패턴 (2D/3D)"
+        self.app.session_state["scan_mode"] = "2d"
+        self.app.session_state["is_scanning"] = True
+        self.app.session_state["scan_idx"] = 0
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertEqual(len(self.app.get("plotly_chart")), 4)
+        self.assertEqual(self.app.session_state["scan_last_azimuth"], -45.0)
+        self.assertEqual(self.app.session_state["scan_last_elevation"], -15.0)
+        self.assertTrue(
+            any("3D 표면 계산을 생략" in item.value for item in self.app.info)
+        )
+
+        self.app.session_state["scan_idx"] = 49
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertFalse(self.app.session_state["is_scanning"])
+        self.assertEqual(self.app.session_state["scan_last_azimuth"], 45.0)
+        self.assertEqual(self.app.session_state["scan_last_elevation"], 15.0)
+        self.assertEqual(len(self.app.get("plotly_chart")), 5)
+        self.assertTrue(any("전체 품질:" in item.value for item in self.app.caption))
+
+    def test_preview_scan_uses_low_surface_resolution_and_shows_estimate(self):
+        self.assertTrue(
+            any("프레임 계산 약" in item.value for item in self.app.caption)
+        )
+        self.assertTrue(
+            any("64×64 전체 품질" in item.value for item in self.app.caption)
+        )
+
+        self.app.session_state["active_result_tab"] = "📊 빔 패턴 (2D/3D)"
+        self.app.session_state["scan_mode"] = "preview_3d"
+        self.app.session_state["is_scanning"] = True
+        self.app.session_state["scan_idx"] = 0
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertEqual(len(self.app.get("plotly_chart")), 5)
+        self.assertTrue(
+            any("미리보기: 전역 16×16" in item.value for item in self.app.caption)
+        )
+
+    def test_explicit_compute_cancel_stops_scan_and_skips_callback_rerun(self):
+        self.app.session_state["is_scanning"] = True
+        cancel_button = next(
+            item for item in self.app.button if item.label == "현재 계산 취소"
+        )
+
+        cancel_button.click()
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertFalse(self.app.session_state["is_scanning"])
+        self.assertTrue(
+            any("계산과 자동 스캔을 취소" in item.value for item in self.app.info)
+        )
+
     def test_vertical_controls_disable_immediately_for_ula_and_uca(self):
         def geometry_widget():
             return next(
-                item
-                for item in self.app.selectbox
-                if item.label == "안테나 배열 형상"
+                item for item in self.app.selectbox if item.label == "안테나 배열 형상"
             )
 
         constrained_labels = {
@@ -248,20 +340,23 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
 
         self.assertEqual(list(self.app.exception), [])
         uha_sliders = {
-            item.label: item for item in self.app.slider
+            item.label: item
+            for item in self.app.slider
             if item.label in {"중앙 행 소자 수 (Nmax)", "최소 행 소자 수 (Nmin)"}
         }
         self.assertEqual(uha_sliders["중앙 행 소자 수 (Nmax)"].value, 4)
         self.assertEqual(uha_sliders["최소 행 소자 수 (Nmin)"].value, 2)
         row_spacing = next(
-            item for item in self.app.number_input
+            item
+            for item in self.app.number_input
             if item.label == "수직 행 간격 (dz/λ)"
         )
         self.assertTrue(row_spacing.disabled)
         self.assertAlmostEqual(row_spacing.value, 0.5 * (3.0**0.5) / 2.0)
         self.assertFalse(
             next(
-                item.disabled for item in self.app.slider
+                item.disabled
+                for item in self.app.slider
                 if item.label == "목표 Elevation 각도 (°)"
             )
         )
@@ -285,7 +380,8 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(list(restored.exception), [])
         self.assertEqual(
             next(
-                item.value for item in restored.selectbox
+                item.value
+                for item in restored.selectbox
                 if item.label == "안테나 배열 형상"
             ),
             "UHA",
@@ -312,9 +408,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(command["payload"]["settings"]["frequency_ghz"], 4.0)
         self.assertNotIn("frequency_ghz", self.app.query_params)
 
-        next(
-            item for item in self.app.button if item.label == "공유 링크 생성"
-        ).click()
+        next(item for item in self.app.button if item.label == "공유 링크 생성").click()
         self.app.run()
         token = self.app.query_params["settings"]
         if isinstance(token, list):
@@ -328,8 +422,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(list(self.app.exception), [])
         self.assertEqual(
             next(
-                item.value for item in self.app.slider
-                if item.label == "주파수 (GHz)"
+                item.value for item in self.app.slider if item.label == "주파수 (GHz)"
             ),
             28.0,
         )

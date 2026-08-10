@@ -20,6 +20,7 @@ from array_geometry import (
 from array_math import (
     direction_cosines,
     element_pattern_factor,
+    great_circle_directions,
     parse_phase_bits,
     quantize_phases,
     steering_phases,
@@ -63,6 +64,7 @@ __all__ = [
     "find_first_null",
     "get_steering_limits",
     "get_window_weights",
+    "great_circle_directions",
     "normalize_pattern_db",
     "normalize_pattern_linear",
     "parse_phase_bits",

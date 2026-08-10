@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import os
 
 
 HARD_MAX_ELEMENTS = 16_384
 HARD_MAX_SCAN_FRAMES = 1_000
 HARD_MAX_SCAN_ELEMENT_FRAMES = 4_000_000
+HARD_MAX_CONCURRENT_CALCULATIONS = 32
+HARD_MAX_COMPUTE_SECONDS = 120.0
+HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE = 600
+HARD_MAX_SESSION_BURST = 60
+HARD_MAX_QUEUE_TIMEOUT_SECONDS = 30.0
+HARD_MAX_HEALTH_LOG_INTERVAL_SECONDS = 300.0
 
 
 def _bounded_environment_int(name: str, default: int, hard_maximum: int) -> int:
@@ -22,6 +29,25 @@ def _bounded_environment_int(name: str, default: int, hard_maximum: int) -> int:
     return min(max(1, value), hard_maximum)
 
 
+def _bounded_environment_float(
+    name: str,
+    default: float,
+    hard_maximum: float,
+    *,
+    minimum: float = 0.01,
+) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value):
+        return default
+    return min(max(value, minimum), hard_maximum)
+
+
 @dataclass(frozen=True)
 class ResourcePolicy:
     """Maximum work accepted from one browser session request."""
@@ -29,11 +55,30 @@ class ResourcePolicy:
     max_elements: int = 4_096
     max_scan_frames: int = 400
     max_scan_element_frames: int = 1_000_000
+    max_concurrent_calculations: int = 2
+    compute_queue_timeout_seconds: float = 1.0
+    compute_timeout_seconds: float = 10.0
+    session_calculations_per_minute: int = 120
+    session_burst: int = 8
+    health_log_interval_seconds: float = 30.0
 
     @classmethod
     def from_environment(cls) -> "ResourcePolicy":
         """Load bounded operator overrides without exceeding hard limits."""
 
+        calculations_per_minute = _bounded_environment_int(
+            "DBF_SESSION_CALCULATIONS_PER_MINUTE",
+            cls.session_calculations_per_minute,
+            HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE,
+        )
+        session_burst = min(
+            _bounded_environment_int(
+                "DBF_SESSION_BURST",
+                cls.session_burst,
+                HARD_MAX_SESSION_BURST,
+            ),
+            calculations_per_minute,
+        )
         return cls(
             max_elements=_bounded_environment_int(
                 "DBF_MAX_ELEMENTS",
@@ -49,6 +94,29 @@ class ResourcePolicy:
                 "DBF_MAX_SCAN_ELEMENT_FRAMES",
                 cls.max_scan_element_frames,
                 HARD_MAX_SCAN_ELEMENT_FRAMES,
+            ),
+            max_concurrent_calculations=_bounded_environment_int(
+                "DBF_MAX_CONCURRENT_CALCULATIONS",
+                cls.max_concurrent_calculations,
+                HARD_MAX_CONCURRENT_CALCULATIONS,
+            ),
+            compute_queue_timeout_seconds=_bounded_environment_float(
+                "DBF_COMPUTE_QUEUE_TIMEOUT_SECONDS",
+                cls.compute_queue_timeout_seconds,
+                HARD_MAX_QUEUE_TIMEOUT_SECONDS,
+            ),
+            compute_timeout_seconds=_bounded_environment_float(
+                "DBF_COMPUTE_TIMEOUT_SECONDS",
+                cls.compute_timeout_seconds,
+                HARD_MAX_COMPUTE_SECONDS,
+            ),
+            session_calculations_per_minute=calculations_per_minute,
+            session_burst=session_burst,
+            health_log_interval_seconds=_bounded_environment_float(
+                "DBF_HEALTH_LOG_INTERVAL_SECONDS",
+                cls.health_log_interval_seconds,
+                HARD_MAX_HEALTH_LOG_INTERVAL_SECONDS,
+                minimum=1.0,
             ),
         )
 

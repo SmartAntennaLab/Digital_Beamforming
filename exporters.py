@@ -7,13 +7,15 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from directivity import DirectivityResult
 from model_options import (
     ELEMENT_PATTERN_LABELS,
     PHASE_BIT_LABELS,
     TAPER_LABELS,
     option_label,
 )
-from simulation import PatternCuts, SimulationState, summarize_array_layout
+from pattern_sampling import GreatCircleCuts, PatternCuts
+from simulation import SimulationState, summarize_array_layout
 from ui_formatters import (
     array_size_text,
     format_absolute_residual,
@@ -34,28 +36,53 @@ class ExportArtifacts:
     design_report: bytes
 
 
-def build_pattern_export_frame(cuts: PatternCuts) -> pd.DataFrame:
+def build_pattern_export_frame(
+    cuts: PatternCuts,
+    great_circle_cuts: GreatCircleCuts | None = None,
+) -> pd.DataFrame:
     """Return aligned azimuth/elevation cut data without UI dependencies."""
 
-    return pd.DataFrame(
-        {
-            "Azimuth Angle (deg)": pd.Series(
-                np.degrees(cuts.azimuth_angles_rad), dtype=float
-            ),
-            "Azimuth Gain (dB)": pd.Series(
-                cuts.azimuth_pattern_db, dtype=float
-            ),
-            "Elevation Angle (deg)": pd.Series(
-                np.degrees(cuts.elevation_angles_rad), dtype=float
-            ),
-            "Elevation Gain (dB)": pd.Series(
-                cuts.elevation_pattern_db, dtype=float
-            ),
-        }
-    )
+    columns = {
+        "Azimuth Angle (deg)": pd.Series(
+            np.degrees(cuts.azimuth_angles_rad), dtype=float
+        ),
+        "Azimuth Gain (dB)": pd.Series(cuts.azimuth_pattern_db, dtype=float),
+        "Elevation Angle (deg)": pd.Series(
+            np.degrees(cuts.elevation_angles_rad), dtype=float
+        ),
+        "Elevation Gain (dB)": pd.Series(cuts.elevation_pattern_db, dtype=float),
+    }
+    if great_circle_cuts is not None:
+        columns.update(
+            {
+                "Horizontal Great-circle Offset (deg)": pd.Series(
+                    np.degrees(great_circle_cuts.horizontal_offsets_rad),
+                    dtype=float,
+                ),
+                "Horizontal Great-circle Gain (dB)": pd.Series(
+                    great_circle_cuts.horizontal_pattern_db,
+                    dtype=float,
+                ),
+                "Vertical Great-circle Offset (deg)": pd.Series(
+                    np.degrees(great_circle_cuts.vertical_offsets_rad),
+                    dtype=float,
+                ),
+                "Vertical Great-circle Gain (dB)": pd.Series(
+                    great_circle_cuts.vertical_pattern_db,
+                    dtype=float,
+                ),
+            }
+        )
+    return pd.DataFrame(columns)
 
 
-def build_design_report(state: SimulationState, cuts: PatternCuts) -> str:
+def build_design_report(
+    state: SimulationState,
+    cuts: PatternCuts,
+    *,
+    great_circle_cuts: GreatCircleCuts | None = None,
+    directivity: DirectivityResult | None = None,
+) -> str:
     """Build the human-readable Markdown design report."""
 
     gain = state.gain_metrics
@@ -64,6 +91,28 @@ def build_design_report(state: SimulationState, cuts: PatternCuts) -> str:
         f"{gain.relative_array_gain_db:.2f} dB"
         if gain.relative_array_gain_db is not None
         else "N/A (유효 가중치 없음)"
+    )
+    directivity_text = (
+        f"{directivity.directivity_dbi:.2f} dBi"
+        if directivity is not None
+        and directivity.directivity_dbi is not None
+        and np.isfinite(directivity.directivity_dbi)
+        else (
+            "-∞ dBi"
+            if directivity is not None and directivity.directivity_dbi is not None
+            else "N/A"
+        )
+    )
+    great_circle_report = (
+        "- 실제 각거리 수평 주평면 HPBW / FNBW / SLL: "
+        f"{format_pattern_metric_summary(great_circle_cuts.horizontal_metrics)}\n"
+        "- 실제 각거리 수직 주평면 HPBW / FNBW / SLL: "
+        f"{format_pattern_metric_summary(great_circle_cuts.vertical_metrics)}"
+        if great_circle_cuts is not None
+        else "- 실제 각거리 Great-circle 지표: N/A"
+    )
+    directivity_method = (
+        directivity.integration_method if directivity is not None else "N/A"
     )
     weight_result = state.weight_result
     rank = (
@@ -80,12 +129,26 @@ def build_design_report(state: SimulationState, cuts: PatternCuts) -> str:
     actual_null_depth = (
         weight_result.null_depths_db[0] if weight_result.null_depths_db else None
     )
+    amplitude_limit_text = (
+        f"{weight_result.maximum_element_amplitude:.6g}"
+        if weight_result.maximum_element_amplitude is not None
+        else "미사용"
+    )
+    met_null_count = sum(
+        status is True for status in weight_result.null_requirement_met
+    )
 
     if state.config.enable_null_steering:
         continuous = weight_result.continuous_diagnostics
         final = weight_result.final_diagnostics
         lines = [
             f"- 해법: {null_solver_label(weight_result.solver_method)}",
+            f"- 최적화 반복: {weight_result.optimizer_iterations}회",
+            f"- 최대 소자 진폭 제한: {amplitude_limit_text}",
+            f"- 포화 소자: {weight_result.saturated_element_count}개",
+            (
+                f"- 요구 억압 충족: {met_null_count} / {len(weight_result.null_requirement_met)}"
+            ),
             f"- 제약 rank / condition: {rank} / {condition}",
             (
                 "- 목표 응답 오차(연속 / 최종): "
@@ -114,9 +177,7 @@ def build_design_report(state: SimulationState, cuts: PatternCuts) -> str:
             (
                 "- 목표 응답 오차 양자화 열화: "
                 + (
-                    format_degradation(
-                        weight_result.quantization_target_degradation_db
-                    )
+                    format_degradation(weight_result.quantization_target_degradation_db)
                     if weight_result.phase_quantization_applied
                     else "양자화 미적용"
                 )
@@ -130,9 +191,14 @@ def build_design_report(state: SimulationState, cuts: PatternCuts) -> str:
             continuous_relative = continuous.null_relative_residuals[index]
             final_relative = final.null_relative_residuals[index]
             degradation = weight_result.quantization_null_degradation_db[index]
+            requirement_status = (
+                "충족" if weight_result.null_requirement_met[index] is True else "미달"
+            )
+            required_db = weight_result.null_required_suppression_db[index]
             lines.append(
                 f"- Null {index + 1} (Az {np.degrees(azimuth_rad):.3f}°, "
-                f"El {np.degrees(elevation_rad):.3f}°): 절대 잔차 "
+                f"El {np.degrees(elevation_rad):.3f}°): 요구 {required_db:.1f} dB "
+                f"({requirement_status}), 절대 잔차 "
                 f"{format_absolute_residual(continuous_absolute)} → "
                 f"{format_absolute_residual(final_absolute)}, 상대 잔차 "
                 f"{format_residual_db(continuous_relative)} → "
@@ -166,11 +232,14 @@ def build_design_report(state: SimulationState, cuts: PatternCuts) -> str:
 ## 성능 지표
 
 - 상대 배열 이득: {relative_array_gain}
+- 목표 방향 Directivity: {directivity_text}
+- Directivity 전구 적분: {directivity_method}
 - 활성 소자: {gain.active_elements} / {gain.total_elements}
 - 테이퍼 효율: {100.0 * gain.taper_efficiency:.2f}%
 - 위상·조향 효율: {100.0 * gain.phase_efficiency:.2f}%
-- Azimuth HPBW / FNBW / SLL: {format_pattern_metric_summary(cuts.azimuth_metrics)}
-- Elevation HPBW / FNBW / SLL: {format_pattern_metric_summary(cuts.elevation_metrics)}
+- 좌표각 Azimuth HPBW / FNBW / SLL: {format_pattern_metric_summary(cuts.azimuth_metrics)}
+- 좌표각 Elevation HPBW / FNBW / SLL: {format_pattern_metric_summary(cuts.elevation_metrics)}
+{great_circle_report}
 - 실제 Null 깊이: {format_depth(actual_null_depth) if state.config.enable_null_steering else 'N/A'}
 
 ## Null 제약 진단
@@ -182,9 +251,17 @@ def build_design_report(state: SimulationState, cuts: PatternCuts) -> str:
 def build_export_artifacts(
     state: SimulationState,
     cuts: PatternCuts,
+    *,
+    great_circle_cuts: GreatCircleCuts | None = None,
+    directivity: DirectivityResult | None = None,
 ) -> ExportArtifacts:
-    frame = build_pattern_export_frame(cuts)
+    frame = build_pattern_export_frame(cuts, great_circle_cuts)
     return ExportArtifacts(
         pattern_csv=frame.to_csv(index=False).encode("utf-8"),
-        design_report=build_design_report(state, cuts).encode("utf-8"),
+        design_report=build_design_report(
+            state,
+            cuts,
+            great_circle_cuts=great_circle_cuts,
+            directivity=directivity,
+        ).encode("utf-8"),
     )

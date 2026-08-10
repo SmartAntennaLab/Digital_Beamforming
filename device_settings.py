@@ -16,15 +16,19 @@ from model_options import (
     GEOMETRY_LABELS,
     GEOMETRY_OPTIONS,
     PHASE_BIT_LABELS,
+    NULL_OPTIMIZATION_MODE_LABELS,
+    NULL_OPTIMIZATION_MODE_OPTIONS,
     PHASE_BIT_OPTIONS,
     SCALE_LABELS,
     SCALE_OPTIONS,
+    SCAN_MODE_LABELS,
+    SCAN_MODE_OPTIONS,
     TAPER_LABELS,
     TAPER_OPTIONS,
     normalize_option_id,
 )
 
-DEVICE_SETTINGS_SCHEMA_VERSION = 2
+DEVICE_SETTINGS_SCHEMA_VERSION = 4
 DEVICE_STORAGE_KEY = "digital_beamforming.settings.v1"
 
 DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
@@ -45,6 +49,11 @@ DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
     "enable_null": False,
     "null_azimuth": 30.0,
     "null_elevation": 0.0,
+    "null_count": 1,
+    "null_1_suppression_db": 40.0,
+    "null_optimization_mode": "amplitude_phase",
+    "enable_amplitude_limit": False,
+    "max_element_amplitude": 1.0,
     "scale_option": "db",
     "coordinate_option": "polar",
     "show_3db": True,
@@ -54,7 +63,16 @@ DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
     "scan_elevation_range": (-15.0, 15.0),
     "scan_elevation_steps": 5,
     "scan_delay": 0.2,
+    "scan_mode": "preview_3d",
 }
+
+for null_index, default_azimuth in enumerate(
+    (-30.0, 45.0, -45.0, 60.0, -60.0, 75.0, -75.0),
+    start=2,
+):
+    DEFAULT_DEVICE_SETTINGS[f"null_{null_index}_azimuth"] = default_azimuth
+    DEFAULT_DEVICE_SETTINGS[f"null_{null_index}_elevation"] = 0.0
+    DEFAULT_DEVICE_SETTINGS[f"null_{null_index}_suppression_db"] = 40.0
 
 
 def _choice(options: Sequence[str]) -> Callable[[object], str]:
@@ -107,7 +125,9 @@ def _boolean(value: object) -> bool:
     raise ValueError("Invalid Boolean setting.")
 
 
-def _range_pair(minimum: float, maximum: float) -> Callable[[object], tuple[float, float]]:
+def _range_pair(
+    minimum: float, maximum: float
+) -> Callable[[object], tuple[float, float]]:
     def validate(value: object) -> tuple[float, float]:
         candidate: object = value
         if isinstance(candidate, str):
@@ -155,6 +175,11 @@ SETTING_VALIDATORS: dict[str, Callable[[object], object]] = {
     "enable_null": _boolean,
     "null_azimuth": _finite_float(-90.0, 90.0),
     "null_elevation": _finite_float(-90.0, 90.0),
+    "null_count": _bounded_int(1, 8),
+    "null_1_suppression_db": _finite_float(0.0, 120.0),
+    "null_optimization_mode": _option(NULL_OPTIMIZATION_MODE_LABELS),
+    "enable_amplitude_limit": _boolean,
+    "max_element_amplitude": _finite_float(0.05, 10.0),
     "scale_option": _option(SCALE_LABELS),
     "coordinate_option": _option(COORDINATE_LABELS),
     "show_3db": _boolean,
@@ -164,7 +189,13 @@ SETTING_VALIDATORS: dict[str, Callable[[object], object]] = {
     "scan_elevation_range": _range_pair(-90.0, 90.0),
     "scan_elevation_steps": _bounded_int(2, 20),
     "scan_delay": _finite_float(0.1, 2.0),
+    "scan_mode": _option(SCAN_MODE_LABELS),
 }
+
+for null_index in range(2, 9):
+    SETTING_VALIDATORS[f"null_{null_index}_azimuth"] = _finite_float(-90.0, 90.0)
+    SETTING_VALIDATORS[f"null_{null_index}_elevation"] = _finite_float(-90.0, 90.0)
+    SETTING_VALIDATORS[f"null_{null_index}_suppression_db"] = _finite_float(0.0, 120.0)
 
 DEVICE_SETTING_KEYS = tuple(SETTING_VALIDATORS)
 
@@ -176,7 +207,7 @@ def sanitize_device_settings(settings: object) -> dict[str, object]:
         return {}
     if "settings" in settings:
         version = settings.get("schema_version")
-        if version not in {1, DEVICE_SETTINGS_SCHEMA_VERSION}:
+        if version not in {1, 2, 3, DEVICE_SETTINGS_SCHEMA_VERSION}:
             return {}
         settings = settings.get("settings")
         if not isinstance(settings, Mapping):

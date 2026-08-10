@@ -16,10 +16,52 @@ from beamforming import (
     element_pattern_factor,
     get_steering_limits,
     get_window_weights,
+    great_circle_directions,
     normalize_pattern_db,
     normalize_pattern_linear,
     steering_vector,
 )
+
+
+class GreatCircleDirectionTests(unittest.TestCase):
+    def test_offsets_are_exact_spherical_angular_distances(self):
+        target_azimuth = np.radians(37.0)
+        target_elevation = np.radians(58.0)
+        offsets = np.radians(np.array([-70.0, -12.0, 0.0, 19.0, 80.0]))
+
+        for plane in ("horizontal", "vertical"):
+            azimuth, elevation = great_circle_directions(
+                target_azimuth,
+                target_elevation,
+                offsets,
+                plane=plane,
+            )
+            target = np.array(
+                [
+                    np.cos(target_elevation) * np.cos(target_azimuth),
+                    np.cos(target_elevation) * np.sin(target_azimuth),
+                    np.sin(target_elevation),
+                ]
+            )
+            directions = np.column_stack(direction_cosines(azimuth, elevation))
+            # atan2(||u x v||, u dot v) remains well-conditioned at zero
+            # separation, unlike arccos(u dot v), whose derivative is singular
+            # near one and can turn round-off into a spurious nonzero angle.
+            cross_norms = np.linalg.norm(np.cross(directions, target), axis=1)
+            dot_products = np.clip(directions @ target, -1.0, 1.0)
+            distances = np.arctan2(cross_norms, dot_products)
+            np.testing.assert_allclose(distances, np.abs(offsets), atol=1e-12)
+
+    def test_zero_offset_returns_the_target_for_both_planes(self):
+        for plane in ("horizontal", "vertical"):
+            azimuth, elevation = great_circle_directions(
+                np.radians(-23.0),
+                np.radians(41.0),
+                np.array([0.0]),
+                plane=plane,
+            )
+            self.assertAlmostEqual(float(azimuth[0]), np.radians(-23.0))
+            self.assertAlmostEqual(float(elevation[0]), np.radians(41.0))
 
 
 class ArrayCoordinateTests(unittest.TestCase):
@@ -63,9 +105,7 @@ class ArrayCoordinateTests(unittest.TestCase):
         for element_count in (2, 3, 8, 32):
             with self.subTest(element_count=element_count):
                 coordinates = create_array_coordinates(1, element_count, 0.4, "UCA")
-                points = np.column_stack(
-                    (coordinates.y.ravel(), coordinates.z.ravel())
-                )
+                points = np.column_stack((coordinates.y.ravel(), coordinates.z.ravel()))
                 adjacent_chords = np.linalg.norm(
                     points - np.roll(points, -1, axis=0), axis=1
                 )
@@ -156,9 +196,7 @@ class GeometryConsistencyTests(unittest.TestCase):
             "Dipole (다이폴)",
         ):
             with self.subTest(option=option):
-                two_dimensional_cut = element_pattern_factor(
-                    option, azimuth, elevation
-                )
+                two_dimensional_cut = element_pattern_factor(option, azimuth, elevation)
                 three_dimensional_slice = element_pattern_factor(
                     option, azimuth, np.pi / 2.0 - theta
                 )
@@ -169,12 +207,8 @@ class GeometryConsistencyTests(unittest.TestCase):
                 )
 
     def test_element_pattern_known_values_and_dipole_endpoints(self):
-        self.assertAlmostEqual(
-            element_pattern_factor("Cosine", 0.0, 0.0).item(), 1.0
-        )
-        self.assertAlmostEqual(
-            element_pattern_factor("Cosine", np.pi, 0.0).item(), 0.0
-        )
+        self.assertAlmostEqual(element_pattern_factor("Cosine", 0.0, 0.0).item(), 1.0)
+        self.assertAlmostEqual(element_pattern_factor("Cosine", np.pi, 0.0).item(), 0.0)
         self.assertAlmostEqual(
             element_pattern_factor("Cosine²", np.radians(60.0), 0.0).item(),
             0.25,
@@ -196,7 +230,9 @@ class GeometryConsistencyTests(unittest.TestCase):
         )
         self.assertFalse(ula_safe.has_aliasing_risk)
         self.assertTrue(ula_aliased.has_aliasing_risk)
-        self.assertTrue(all(direction.order_z == 0 for direction in ula_aliased.directions))
+        self.assertTrue(
+            all(direction.order_z == 0 for direction in ula_aliased.directions)
+        )
 
         upa_aliased = assess_grating_lobes(
             "UPA",
@@ -266,13 +302,9 @@ class GeometryConsistencyTests(unittest.TestCase):
         )
 
         self.assertTrue(horizontal_alias.has_aliasing_risk)
-        self.assertTrue(
-            all(item.order_z == 0 for item in horizontal_alias.directions)
-        )
+        self.assertTrue(all(item.order_z == 0 for item in horizontal_alias.directions))
         self.assertTrue(vertical_alias.has_aliasing_risk)
-        self.assertTrue(
-            all(item.order_y == 0 for item in vertical_alias.directions)
-        )
+        self.assertTrue(all(item.order_y == 0 for item in vertical_alias.directions))
 
 
 class WindowAndFailureTests(unittest.TestCase):
@@ -321,6 +353,28 @@ class WindowAndFailureTests(unittest.TestCase):
 
 
 class SteeringAndArrayFactorTests(unittest.TestCase):
+    def test_array_factor_checks_cooperative_cancellation_between_chunks(self):
+        checks = 0
+
+        def cancel_check():
+            nonlocal checks
+            checks += 1
+            if checks >= 3:
+                raise RuntimeError("cancelled")
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+            array_factor(
+                np.arange(4, dtype=float),
+                np.zeros(4),
+                np.ones(4, dtype=complex),
+                1.0,
+                np.linspace(-0.5, 0.5, 4),
+                np.zeros(4),
+                angle_chunk_size=1,
+                element_chunk_size=1,
+                cancel_check=cancel_check,
+            )
+
     wavelength = 1.0
 
     def _uniform_weights(self, geometry, rows, columns, azimuth, elevation, bits=None):
@@ -456,7 +510,9 @@ class SteeringAndArrayFactorTests(unittest.TestCase):
                 )
                 step = 2.0 * np.pi / (2**bits)
                 phase_states = np.angle(result.weights).ravel() / step
-                np.testing.assert_allclose(phase_states, np.round(phase_states), atol=1e-12)
+                np.testing.assert_allclose(
+                    phase_states, np.round(phase_states), atol=1e-12
+                )
 
     def test_array_factor_supports_vector_angle_inputs(self):
         coordinates, result = self._uniform_weights("ULA", 1, 4, 0.0, 0.0)
@@ -552,6 +608,16 @@ class SteeringAndArrayFactorTests(unittest.TestCase):
 
 
 class PatternMetricAndNullTests(unittest.TestCase):
+    def test_metrics_can_anchor_an_equal_height_target_lobe(self):
+        angles = np.radians(np.array([-180.0, -20.0, -10.0, 0.0, 10.0, 20.0]))
+        pattern = np.array([1.0, 0.1, 0.5, 1.0, 0.5, 0.1])
+
+        metrics = calculate_pattern_metrics(pattern, angles, peak_index=3)
+
+        self.assertEqual(metrics.peak_index, 3)
+        self.assertGreater(metrics.hpbw_left_angle_deg, -20.0)
+        self.assertLess(metrics.hpbw_right_angle_deg, 20.0)
+
     def test_hpbw_uses_linear_interpolation_between_samples(self):
         angles_deg = np.array([-2.0, -1.0, 0.0, 1.0, 2.0])
         pattern = np.array([0.5, 0.8, 1.0, 0.8, 0.5])
@@ -561,12 +627,8 @@ class PatternMetricAndNullTests(unittest.TestCase):
         right_crossing = 1.0 + (0.8 - half_power) / (0.8 - 0.5)
         expected_hpbw = 2.0 * right_crossing
         self.assertAlmostEqual(metrics.hpbw_deg, expected_hpbw, places=12)
-        self.assertAlmostEqual(
-            metrics.hpbw_left_angle_deg, -right_crossing, places=12
-        )
-        self.assertAlmostEqual(
-            metrics.hpbw_right_angle_deg, right_crossing, places=12
-        )
+        self.assertAlmostEqual(metrics.hpbw_left_angle_deg, -right_crossing, places=12)
+        self.assertAlmostEqual(metrics.hpbw_right_angle_deg, right_crossing, places=12)
 
     def test_fnbw_one_sided_formulas_use_distance_from_peak(self):
         right_only = calculate_pattern_metrics(
@@ -826,6 +888,74 @@ class PatternMetricAndNullTests(unittest.TestCase):
         )
         self.assertEqual(len(result.quantization_null_degradation_db), 2)
         self.assertTrue(all(depth >= 250.0 for depth in result.null_depths_db))
+
+    def test_phase_only_optimizer_keeps_amplitudes_and_meets_requirements(self):
+        coordinates = create_array_coordinates(1, 16, 0.5, "ULA")
+        result = compute_beamforming_weights(
+            coordinates.y,
+            coordinates.z,
+            1.0,
+            0.0,
+            0.0,
+            np.ones_like(coordinates.y),
+            null_directions_rad=[
+                (np.radians(-25.0), 0.0),
+                (np.radians(32.0), 0.0),
+            ],
+            null_required_suppression_db=[25.0, 25.0],
+            optimization_mode="phase_only",
+        )
+
+        self.assertTrue(result.null_applied)
+        self.assertEqual(result.solver_method, "phase_only_projected_gradient")
+        self.assertGreater(result.optimizer_iterations, 0)
+        np.testing.assert_allclose(np.abs(result.continuous_weights), 1.0)
+        self.assertEqual(result.null_required_suppression_db, (25.0, 25.0))
+        self.assertEqual(result.null_requirement_met, (True, True))
+        self.assertLess(result.final_diagnostics.target_relative_error, 0.02)
+
+    def test_amplitude_limit_reports_saturation_and_unmet_directions(self):
+        coordinates = create_array_coordinates(1, 16, 0.5, "ULA")
+        result = compute_beamforming_weights(
+            coordinates.y,
+            coordinates.z,
+            1.0,
+            0.0,
+            0.0,
+            np.ones_like(coordinates.y),
+            null_directions_rad=[
+                (np.radians(-25.0), 0.0),
+                (np.radians(32.0), 0.0),
+            ],
+            null_required_suppression_db=[40.0, 40.0],
+            maximum_element_amplitude=1.0,
+        )
+
+        self.assertLessEqual(np.max(np.abs(result.weights)), 1.0 + 1.0e-12)
+        self.assertGreater(result.saturated_element_count, 0)
+        self.assertEqual(
+            result.saturated_element_count,
+            int(np.count_nonzero(result.saturated_element_mask)),
+        )
+        self.assertIn(False, result.null_requirement_met)
+        self.assertIsNotNone(result.diagnostic_message)
+
+    def test_each_null_direction_requires_one_suppression_value(self):
+        coordinates = create_array_coordinates(1, 8, 0.5, "ULA")
+        with self.assertRaisesRegex(ValueError, "one suppression"):
+            compute_beamforming_weights(
+                coordinates.y,
+                coordinates.z,
+                1.0,
+                0.0,
+                0.0,
+                np.ones_like(coordinates.y),
+                null_directions_rad=[
+                    (np.radians(-20.0), 0.0),
+                    (np.radians(30.0), 0.0),
+                ],
+                null_required_suppression_db=[40.0],
+            )
 
     def test_coincident_null_falls_back_without_non_finite_weights(self):
         coordinates = create_array_coordinates(1, 4, 0.5, "ULA")

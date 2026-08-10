@@ -78,6 +78,7 @@ def format_degradation(degradation_db: float | None) -> str:
 def null_solver_label(method: str) -> str:
     return {
         "svd_minimum_norm": "SVD 최소노름",
+        "phase_only_projected_gradient": "위상 전용 반복 최적화",
         "svd_rejected": "SVD 조건 불량",
         "svd_failed": "SVD 계산 실패",
         "not_requested": "미사용",

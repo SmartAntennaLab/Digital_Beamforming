@@ -2,3 +2,8 @@
 
 설치, 실행, 테스트, 모델 가정, 지표 정의 및 배포 절차의 기준 문서는
 README.md입니다. 오래된 명령을 복사하지 말고 README.md를 확인하십시오.
+1. 실행방법
+python -m streamlit run main.py 
+
+uv run --frozen --no-sync streamlit run main.py
+

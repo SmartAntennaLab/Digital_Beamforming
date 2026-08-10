@@ -40,6 +40,15 @@ COORDINATE_LABELS: dict[str, str] = {
     "polar": "Polar (극좌표)",
     "rectangular": "Rectangular (직각좌표)",
 }
+SCAN_MODE_LABELS: dict[str, str] = {
+    "2d": "2D 전용",
+    "preview_3d": "3D 미리보기",
+    "full_3d": "전체 품질 3D",
+}
+NULL_OPTIMIZATION_MODE_LABELS: dict[str, str] = {
+    "amplitude_phase": "진폭·위상 동시 제어",
+    "phase_only": "위상 전용 최적화",
+}
 
 GEOMETRY_OPTIONS = tuple(GEOMETRY_LABELS)
 TAPER_OPTIONS = tuple(TAPER_LABELS)
@@ -47,6 +56,8 @@ ELEMENT_OPTIONS = tuple(ELEMENT_PATTERN_LABELS)
 PHASE_BIT_OPTIONS = tuple(PHASE_BIT_LABELS)
 SCALE_OPTIONS = tuple(SCALE_LABELS)
 COORDINATE_OPTIONS = tuple(COORDINATE_LABELS)
+SCAN_MODE_OPTIONS = tuple(SCAN_MODE_LABELS)
+NULL_OPTIMIZATION_MODE_OPTIONS = tuple(NULL_OPTIMIZATION_MODE_LABELS)
 
 
 def option_label(value: object, labels: Mapping[object, str]) -> str:

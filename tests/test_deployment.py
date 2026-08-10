@@ -19,6 +19,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
                 "numpy==2.3.5",
                 "pandas==2.3.3",
                 "plotly==6.9.0",
+                "psutil==7.2.2",
                 "streamlit==1.60.0",
             ],
         )
@@ -29,6 +30,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
                     "pip==26.2",
                     "pip-audit==2.10.1",
                     "pip-licenses==5.5.5",
+                    "setuptools==83.0.0",
                 ],
                 "e2e": ["playwright==1.61.0"],
             },
@@ -37,9 +39,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertFalse((PROJECT_ROOT / "requirements-e2e.txt").exists())
 
     def test_uv_lock_is_universal_and_hashes_registry_artifacts(self):
-        lock = tomllib.loads(
-            (PROJECT_ROOT / "uv.lock").read_text(encoding="utf-8")
-        )
+        lock = tomllib.loads((PROJECT_ROOT / "uv.lock").read_text(encoding="utf-8"))
         self.assertEqual(lock["requires-python"], ">=3.11, <3.15")
         packages = lock["package"]
         project = next(
@@ -47,16 +47,14 @@ class DeploymentConfigurationTests(unittest.TestCase):
             for package in packages
             if package["name"] == "digital-beamforming-simulator"
         )
-        self.assertEqual(project["version"], "1.4.0")
-        self.assertEqual(
-            set(project["optional-dependencies"]), {"dev", "e2e"}
-        )
+        self.assertEqual(project["version"], "1.5.0")
+        self.assertEqual(set(project["optional-dependencies"]), {"dev", "e2e"})
         for package in packages:
             if "registry" not in package.get("source", {}):
                 continue
-            artifacts = ([package["sdist"]] if "sdist" in package else []) + package.get(
-                "wheels", []
-            )
+            artifacts = (
+                [package["sdist"]] if "sdist" in package else []
+            ) + package.get("wheels", [])
             self.assertTrue(artifacts, package["name"])
             self.assertTrue(
                 all(artifact["hash"].startswith("sha256:") for artifact in artifacts),
@@ -93,9 +91,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
 
     def test_streamlit_config_is_headless_and_keeps_web_protection(self):
         config = tomllib.loads(
-            (PROJECT_ROOT / ".streamlit" / "config.toml").read_text(
-                encoding="utf-8"
-            )
+            (PROJECT_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
         )
         server = config["server"]
         self.assertTrue(server["headless"])
@@ -126,7 +122,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertIn("python -m pip check", dependency_health)
         self.assertIn("python -m pip_audit", dependency_health)
         self.assertIn("python -m piplicenses", dependency_health)
-        self.assertIn('GPL;AGPL;UNKNOWN', dependency_health)
+        self.assertIn("GPL;AGPL;UNKNOWN", dependency_health)
         combined_workflows = ci + dependency_health
         self.assertNotIn("actions/checkout@v", combined_workflows)
         self.assertNotIn("actions/setup-python@v", combined_workflows)
@@ -134,6 +130,26 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertIn('package-ecosystem: "uv"', dependabot)
         self.assertIn('package-ecosystem: "github-actions"', dependabot)
         self.assertIn('interval: "weekly"', dependabot)
+
+    def test_public_server_examples_require_auth_rate_limits_and_quotas(self):
+        nginx = (PROJECT_ROOT / "deploy" / "nginx.conf.example").read_text(
+            encoding="utf-8"
+        )
+        service = (
+            PROJECT_ROOT / "deploy" / "digital-beamforming.service.example"
+        ).read_text(encoding="utf-8")
+        deployment_guide = (PROJECT_ROOT / "deploy" / "README.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("auth_basic_user_file", nginx)
+        self.assertIn("limit_req_zone", nginx)
+        self.assertIn("limit_conn_zone", nginx)
+        self.assertIn("proxy_set_header Upgrade", nginx)
+        self.assertIn("CPUQuota=", service)
+        self.assertIn("MemoryMax=", service)
+        self.assertIn("compute_health", deployment_guide)
+        self.assertIn("DBF_MAX_CONCURRENT_CALCULATIONS", deployment_guide)
 
 
 if __name__ == "__main__":
