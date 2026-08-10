@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import streamlit as st
 
 from compute_governor import check_current_computation
 from directivity import DIRECTIVITY_SCHEMA_VERSION, DirectivityResult
+from interferer_sampling import (
+    INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION,
+    INTERFERER_RESPONSE_SCHEMA_VERSION,
+    InterfererGreatCircleCut,
+    InterfererResponseComparison,
+    calculate_interferer_great_circle_cuts,
+    calculate_interferer_response_comparisons,
+)
 from pattern_sampling import (
     GREAT_CIRCLE_CUT_SCHEMA_VERSION,
     PATTERN_CUT_SCHEMA_VERSION,
@@ -68,6 +78,63 @@ def cached_great_circle_cuts(
         raise ValueError("Unsupported cached great-circle schema version.")
     return calculate_great_circle_cuts(
         cached_state(config, azimuth_deg, elevation_deg),
+        cancel_check=check_current_computation,
+    )
+
+
+def _without_null_steering(config: SimulationConfig) -> SimulationConfig:
+    return replace(
+        config,
+        enable_null_steering=False,
+        maximum_element_amplitude=None,
+    )
+
+
+@st.cache_data(max_entries=24, show_spinner=False)
+def cached_interferer_response_comparisons(
+    config: SimulationConfig,
+    azimuth_deg: float,
+    elevation_deg: float,
+    schema_version: int,
+) -> tuple[InterfererResponseComparison, ...]:
+    if schema_version != INTERFERER_RESPONSE_SCHEMA_VERSION:
+        raise ValueError("Unsupported cached interferer-response schema version.")
+    if not config.enable_null_steering:
+        return ()
+    return calculate_interferer_response_comparisons(
+        cached_state(config, azimuth_deg, elevation_deg),
+        cached_state(_without_null_steering(config), azimuth_deg, elevation_deg),
+        cancel_check=check_current_computation,
+    )
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def cached_interferer_great_circle_cuts(
+    config: SimulationConfig,
+    azimuth_deg: float,
+    elevation_deg: float,
+    schema_version: int,
+) -> tuple[InterfererGreatCircleCut, ...]:
+    if schema_version != INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION:
+        raise ValueError("Unsupported cached interferer great-circle schema version.")
+    if not config.enable_null_steering:
+        return ()
+    state = cached_state(config, azimuth_deg, elevation_deg)
+    baseline_state = cached_state(
+        _without_null_steering(config),
+        azimuth_deg,
+        elevation_deg,
+    )
+    comparisons = cached_interferer_response_comparisons(
+        config,
+        azimuth_deg,
+        elevation_deg,
+        INTERFERER_RESPONSE_SCHEMA_VERSION,
+    )
+    return calculate_interferer_great_circle_cuts(
+        state,
+        baseline_state,
+        comparisons=comparisons,
         cancel_check=check_current_computation,
     )
 

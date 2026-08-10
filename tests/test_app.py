@@ -66,8 +66,24 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
             item for item in self.app.button if item.label == "설정 적용 및 계산"
         )
         null_checkbox.set_value(True)
+        next(
+            item
+            for item in self.app.slider
+            if item.label == "간섭 Azimuth 각도 (°)"
+        ).set_value(20.0)
         apply_button.click()
         self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertEqual(len(self.app.get("plotly_chart")), 6)
+        pattern_metrics = {item.label: item.value for item in self.app.metric}
+        self.assertIn("적용 전 상대 응답", pattern_metrics)
+        self.assertIn("적용 후 상대 응답", pattern_metrics)
+        self.assertIn("추가 억압량", pattern_metrics)
+        self.assertNotEqual(
+            pattern_metrics["적용 전 상대 응답"],
+            pattern_metrics["적용 후 상대 응답"],
+        )
 
         self.app.session_state["active_result_tab"] = "🔍 성능 지표"
         self.app.run()
@@ -82,12 +98,37 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(len(self.app.dataframe), 1)
 
     def test_multiple_null_ui_reports_requirements_and_saturation(self):
+        null_count = next(
+            item for item in self.app.number_input if item.label == "간섭원 수"
+        )
+        null_count.set_value(2)
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertEqual(self.app.session_state["_draft_null_count"], 2)
+        self.assertEqual(self.app.session_state["null_count"], 1)
+        self.assertTrue(
+            any(item.label == "간섭원 2 요구 억압량 (dB)" for item in self.app.slider)
+        )
+
         next(
             item for item in self.app.checkbox if item.label == "영점 조향 활성화"
         ).set_value(True)
         next(
-            item for item in self.app.number_input if item.label == "간섭원 수"
-        ).set_value(2)
+            item
+            for item in self.app.slider
+            if item.label == "간섭원 2 Azimuth 각도 (°)"
+        ).set_value(-25.0)
+        next(
+            item
+            for item in self.app.slider
+            if item.label == "간섭원 2 Elevation 각도 (°)"
+        ).set_value(10.0)
+        next(
+            item
+            for item in self.app.slider
+            if item.label == "간섭원 2 요구 억압량 (dB)"
+        ).set_value(55.0)
         next(
             item for item in self.app.checkbox if item.label == "최대 소자 진폭 제한"
         ).set_value(True)
@@ -100,6 +141,10 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.app.run()
 
         self.assertEqual(list(self.app.exception), [])
+        self.assertEqual(self.app.session_state["null_count"], 2)
+        self.assertEqual(self.app.session_state["null_2_azimuth"], -25.0)
+        self.assertEqual(self.app.session_state["null_2_elevation"], 10.0)
+        self.assertEqual(self.app.session_state["null_2_suppression_db"], 55.0)
         self.assertTrue(
             any(item.label == "간섭원 2 요구 억압량 (dB)" for item in self.app.slider)
         )
@@ -114,6 +159,9 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         table = self.app.dataframe[0].value
         self.assertEqual(len(table), 2)
         self.assertIn("요구 억압", table.columns)
+        self.assertIn("적용 전 상대 응답", table.columns)
+        self.assertIn("적용 후 상대 응답", table.columns)
+        self.assertIn("추가 억압량", table.columns)
         self.assertIn("충족 여부", table.columns)
         trace_table = self.app.dataframe[1].value
         self.assertIn("목적함수", trace_table.columns)
@@ -374,6 +422,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
                         "frequency_ghz": 12.0,
                         "uha_max_count": 5,
                         "uha_min_count": 2,
+                        "null_count": 2,
                     }
                 )
             }
@@ -393,6 +442,13 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(slider_values["주파수 (GHz)"], 12.0)
         self.assertEqual(slider_values["중앙 행 소자 수 (Nmax)"], 5)
         self.assertEqual(slider_values["최소 행 소자 수 (Nmin)"], 2)
+        self.assertEqual(restored.session_state["_draft_null_count"], 2)
+        self.assertTrue(
+            any(
+                item.label == "간섭원 2 요구 억압량 (dB)"
+                for item in restored.slider
+            )
+        )
 
     def test_device_settings_save_share_and_reset_workflow(self):
         frequency = next(
@@ -430,6 +486,8 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
             28.0,
         )
         self.assertEqual(dict(self.app.query_params), {})
+        self.assertEqual(self.app.session_state["null_count"], 1)
+        self.assertEqual(self.app.session_state["_draft_null_count"], 1)
         self.assertEqual(
             self.app.session_state["_device_storage_command"]["action"],
             "clear",

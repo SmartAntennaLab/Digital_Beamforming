@@ -8,7 +8,11 @@ import streamlit as st
 
 from directivity import DirectivityResult
 from exporters import build_export_artifacts
-from pattern_sampling import GreatCircleCuts, PatternCuts
+from interferer_sampling import InterfererResponseComparison
+from pattern_sampling import (
+    GreatCircleCuts,
+    PatternCuts,
+)
 from simulation import SimulationState
 from ui_formatters import (
     format_absolute_residual,
@@ -28,6 +32,7 @@ def render_metrics_tab(
     cuts: PatternCuts,
     great_circle_cuts: GreatCircleCuts,
     directivity: DirectivityResult,
+    interferer_comparisons: tuple[InterfererResponseComparison, ...],
 ) -> None:
     st.subheader("📏 주요 성능 지표 (AESA Performance Metrics)")
     gain = state.gain_metrics
@@ -177,9 +182,14 @@ def render_metrics_tab(
             )
 
         null_rows = []
+        comparison_by_index = {
+            comparison.interferer_index: comparison
+            for comparison in interferer_comparisons
+        }
         for index, (azimuth_rad, elevation_rad) in enumerate(
             weight_result.null_directions_rad
         ):
+            response_comparison = comparison_by_index.get(index + 1)
             continuous_absolute = continuous_diagnostics.null_constraint_residuals[
                 index
             ]
@@ -196,6 +206,21 @@ def render_metrics_tab(
                     ),
                     "요구 억압": (
                         f"{weight_result.null_required_suppression_db[index]:.1f} dB"
+                    ),
+                    "적용 전 상대 응답": (
+                        f"{response_comparison.before_relative_db:.2f} dB"
+                        if response_comparison is not None
+                        else "N/A"
+                    ),
+                    "적용 후 상대 응답": (
+                        f"{response_comparison.after_relative_db:.2f} dB"
+                        if response_comparison is not None
+                        else "N/A"
+                    ),
+                    "추가 억압량": (
+                        f"{response_comparison.additional_suppression_db:+.2f} dB"
+                        if response_comparison is not None
+                        else "N/A"
                     ),
                     "충족 여부": (
                         "충족"

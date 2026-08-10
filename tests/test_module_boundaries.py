@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 
+import interferer_sampling
 import pattern_sampling
 import settings_panel
 import settings_storage
@@ -22,6 +23,10 @@ class ModuleBoundaryTests(unittest.TestCase):
         self.assertIs(
             simulation.calculate_surface_pattern,
             pattern_sampling.calculate_surface_pattern,
+        )
+        self.assertIs(
+            simulation.calculate_interferer_great_circle_cuts,
+            interferer_sampling.calculate_interferer_great_circle_cuts,
         )
         self.assertIs(ui_renderers.render_pattern_tab, ui_pattern.render_pattern_tab)
         self.assertIs(ui_renderers.render_metrics_tab, ui_metrics.render_metrics_tab)
@@ -45,8 +50,10 @@ class ModuleBoundaryTests(unittest.TestCase):
                 self.assertLess(line_count, maximum_lines)
 
     def test_numerical_sampling_module_has_no_streamlit_dependency(self):
-        source = (PROJECT_ROOT / "pattern_sampling.py").read_text(encoding="utf-8")
-        self.assertNotIn("import streamlit", source)
+        for filename in ("pattern_sampling.py", "interferer_sampling.py"):
+            with self.subTest(filename=filename):
+                source = (PROJECT_ROOT / filename).read_text(encoding="utf-8")
+                self.assertNotIn("import streamlit", source)
 
 
 if __name__ == "__main__":

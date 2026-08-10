@@ -31,6 +31,11 @@ from model_options import (
     TAPER_LABELS,
     option_label,
 )
+from null_controls import (
+    applied_null_constraints,
+    apply_draft_null_count,
+    render_null_count_control,
+)
 from resource_policy import ResourcePolicy, resource_limit_message
 from scan_controls import render_scan_controls
 from settings_storage import (
@@ -56,6 +61,13 @@ class SettingsPanelResult:
     scan_delay: float
     scan_mode: str
     resource_error: str | None
+
+
+def _apply_settings_and_save() -> None:
+    """Apply the draft interferer count before persisting submitted settings."""
+
+    apply_draft_null_count()
+    request_device_settings_save()
 
 
 def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
@@ -96,6 +108,10 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
     )
     azimuth_only_geometry = geometry in {"ULA", "UCA"}
     is_uha = geometry == "UHA"
+    draft_null_count = render_null_count_control()
+    st.sidebar.caption(
+        "간섭원 수 변경은 입력 영역만 바꾸며, 아래 적용 버튼을 눌러야 계산됩니다."
+    )
     with st.sidebar.form("simulation_settings", border=True):
         frequency_ghz = st.slider(
             "주파수 (GHz)",
@@ -250,19 +266,8 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
             key="enable_null",
             persist_state="session",
         )
-        null_count = int(
-            st.number_input(
-                "간섭원 수",
-                min_value=1,
-                max_value=8,
-                step=1,
-                key="null_count",
-                persist_state="session",
-                help="목표 응답 제약을 제외하고 동시에 억압할 간섭 방향 수입니다.",
-            )
-        )
         st.markdown("##### 간섭원 1")
-        null_azimuth = st.slider(
+        st.slider(
             "간섭 Azimuth 각도 (°)",
             -90.0,
             90.0,
@@ -271,7 +276,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
             persist_state="session",
         )
         if elevation_locked:
-            null_elevation = st.slider(
+            st.slider(
                 "간섭 Elevation 각도 (°)",
                 -90.0,
                 90.0,
@@ -285,7 +290,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
                 ),
             )
         else:
-            null_elevation = st.slider(
+            st.slider(
                 "간섭 Elevation 각도 (°)",
                 -90.0,
                 90.0,
@@ -293,7 +298,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
                 key="null_elevation",
                 persist_state="session",
             )
-        null_suppression = st.slider(
+        st.slider(
             "간섭원 1 요구 억압량 (dB)",
             0.0,
             120.0,
@@ -301,12 +306,9 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
             key="null_1_suppression_db",
             persist_state="session",
         )
-        null_constraints = [
-            (float(null_azimuth), float(null_elevation), float(null_suppression))
-        ]
-        for null_index in range(2, null_count + 1):
+        for null_index in range(2, draft_null_count + 1):
             st.markdown(f"##### 간섭원 {null_index}")
-            indexed_azimuth = st.slider(
+            st.slider(
                 f"간섭원 {null_index} Azimuth 각도 (°)",
                 -90.0,
                 90.0,
@@ -315,7 +317,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
                 persist_state="session",
             )
             if elevation_locked:
-                indexed_elevation = st.slider(
+                st.slider(
                     f"간섭원 {null_index} Elevation 각도 (°)",
                     -90.0,
                     90.0,
@@ -326,7 +328,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
                     help="이 배열 형상에서는 간섭 Elevation을 0°로 고정합니다.",
                 )
             else:
-                indexed_elevation = st.slider(
+                st.slider(
                     f"간섭원 {null_index} Elevation 각도 (°)",
                     -90.0,
                     90.0,
@@ -334,20 +336,13 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
                     key=f"null_{null_index}_elevation",
                     persist_state="session",
                 )
-            indexed_suppression = st.slider(
+            st.slider(
                 f"간섭원 {null_index} 요구 억압량 (dB)",
                 0.0,
                 120.0,
                 step=1.0,
                 key=f"null_{null_index}_suppression_db",
                 persist_state="session",
-            )
-            null_constraints.append(
-                (
-                    float(indexed_azimuth),
-                    float(indexed_elevation),
-                    float(indexed_suppression),
-                )
             )
         null_optimization_mode = st.selectbox(
             "Null 최적화 방식",
@@ -447,7 +442,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
             "설정 적용 및 계산",
             type="primary",
             width="stretch",
-            on_click=request_device_settings_save,
+            on_click=_apply_settings_and_save,
         )
 
     st.sidebar.caption("입력값은 서버가 아닌 현재 기기의 이 브라우저에만 저장됩니다.")
@@ -476,6 +471,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
         horizontal_count,
         geometry,
     )
+    null_constraints = applied_null_constraints(st.session_state)
     if not steering_limits.azimuth_controllable:
         target_azimuth = 0.0
         null_constraints = [

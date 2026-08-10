@@ -8,6 +8,8 @@ from simulation import (
     SimulationConfig,
     build_simulation_state,
     calculate_great_circle_cuts,
+    calculate_interferer_great_circle_cuts,
+    calculate_interferer_response_comparisons,
     calculate_pattern_cuts,
     calculate_state_directivity,
     calculate_surface_pattern,
@@ -282,6 +284,70 @@ class SimulationStateTests(unittest.TestCase):
             physical.vertical_metrics.hpbw_deg,
             delta=0.02,
         )
+
+    def test_interferer_great_circle_contains_exact_direction_and_comparison(self):
+        baseline_config = SimulationConfig(
+            vertical_count=4,
+            horizontal_count=8,
+            target_azimuth_deg=5.0,
+            target_elevation_deg=-4.0,
+        )
+        nulled_config = SimulationConfig(
+            vertical_count=4,
+            horizontal_count=8,
+            target_azimuth_deg=5.0,
+            target_elevation_deg=-4.0,
+            enable_null_steering=True,
+            null_constraints_deg=((20.0, 12.0, 40.0),),
+        )
+        baseline_state = build_simulation_state(baseline_config)
+        nulled_state = build_simulation_state(nulled_config)
+
+        comparisons = calculate_interferer_response_comparisons(
+            nulled_state,
+            baseline_state,
+        )
+        cuts = calculate_interferer_great_circle_cuts(
+            nulled_state,
+            baseline_state,
+            comparisons=comparisons,
+            sample_count=73,
+            local_sample_count=17,
+        )
+
+        self.assertEqual(len(comparisons), 1)
+        self.assertEqual(len(cuts), 1)
+        comparison = comparisons[0]
+        cut = cuts[0]
+        interferer_index = int(
+            np.argmin(np.abs(cut.offsets_rad - comparison.angular_distance_rad))
+        )
+        self.assertAlmostEqual(
+            cut.offsets_rad[interferer_index],
+            comparison.angular_distance_rad,
+        )
+        self.assertAlmostEqual(
+            np.degrees(cut.azimuth_rad[interferer_index]),
+            20.0,
+        )
+        self.assertAlmostEqual(
+            np.degrees(cut.elevation_rad[interferer_index]),
+            12.0,
+        )
+        self.assertAlmostEqual(
+            cut.before_pattern_db[interferer_index],
+            comparison.before_relative_db,
+        )
+        self.assertAlmostEqual(
+            cut.after_pattern_db[interferer_index],
+            comparison.after_relative_db,
+        )
+        self.assertAlmostEqual(
+            comparison.after_relative_db,
+            -nulled_state.weight_result.null_depths_db[0],
+        )
+        self.assertGreater(comparison.additional_suppression_db, 40.0)
+        self.assertLess(comparison.after_relative_db, -40.0)
 
     def test_large_elevation_distinguishes_coordinate_and_physical_hpbw(self):
         state = build_simulation_state(

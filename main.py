@@ -14,6 +14,10 @@ from compute_governor import (
     get_compute_governor,
 )
 from directivity import DIRECTIVITY_SCHEMA_VERSION
+from interferer_sampling import (
+    INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION,
+    INTERFERER_RESPONSE_SCHEMA_VERSION,
+)
 from model_options import SCAN_MODE_LABELS, option_label
 from pattern_sampling import (
     GREAT_CIRCLE_CUT_SCHEMA_VERSION,
@@ -28,6 +32,8 @@ from simulation import scan_direction
 from simulation_cache import (
     cached_directivity,
     cached_great_circle_cuts,
+    cached_interferer_great_circle_cuts,
+    cached_interferer_response_comparisons,
     cached_pattern_cuts,
     cached_state,
     cached_surface_pattern,
@@ -171,6 +177,8 @@ def render_active_result(view_name: str) -> None:
                 cuts = None
                 great_circle_cuts = None
                 directivity = None
+                interferer_comparisons = ()
+                interferer_great_circle_cuts = ()
                 surface = None
                 surface_sampling = None
                 if view_name in {"pattern", "metrics"}:
@@ -192,6 +200,27 @@ def render_active_result(view_name: str) -> None:
                         current_azimuth,
                         current_elevation,
                         DIRECTIVITY_SCHEMA_VERSION,
+                    )
+                if (
+                    config.enable_null_steering
+                    and view_name in {"pattern", "metrics"}
+                ):
+                    interferer_comparisons = (
+                        cached_interferer_response_comparisons(
+                            config,
+                            current_azimuth,
+                            current_elevation,
+                            INTERFERER_RESPONSE_SCHEMA_VERSION,
+                        )
+                    )
+                if config.enable_null_steering and view_name == "pattern":
+                    interferer_great_circle_cuts = (
+                        cached_interferer_great_circle_cuts(
+                            config,
+                            current_azimuth,
+                            current_elevation,
+                            INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION,
+                        )
                     )
                 if view_name == "pattern":
                     surface_sampling = scan_surface_sampling(
@@ -258,6 +287,7 @@ def render_active_result(view_name: str) -> None:
             state,
             cuts,
             great_circle_cuts,
+            interferer_great_circle_cuts,
             coordinate_option=coordinate_option,
             scale_option=scale_option,
             show_band=show_3db,
@@ -269,7 +299,13 @@ def render_active_result(view_name: str) -> None:
     elif view_name == "metrics":
         if cuts is None or great_circle_cuts is None or directivity is None:
             raise RuntimeError("Metric calculation did not produce pattern cuts.")
-        render_metrics_tab(state, cuts, great_circle_cuts, directivity)
+        render_metrics_tab(
+            state,
+            cuts,
+            great_circle_cuts,
+            directivity,
+            interferer_comparisons,
+        )
     else:
         render_elements_tab(state)
 

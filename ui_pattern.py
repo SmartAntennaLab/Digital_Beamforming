@@ -8,7 +8,12 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from pattern_sampling import GreatCircleCuts, PatternCuts, SurfacePattern
+from interferer_sampling import InterfererGreatCircleCut
+from pattern_sampling import (
+    GreatCircleCuts,
+    PatternCuts,
+    SurfacePattern,
+)
 from simulation import SimulationState
 from ui_formatters import format_angle_metric
 
@@ -152,10 +157,79 @@ def pattern_figure(
     return figure
 
 
+def interferer_comparison_figure(cut: InterfererGreatCircleCut) -> go.Figure:
+    """Overlay Null-off/on array responses on the exact interferer plane."""
+
+    offsets_deg = np.degrees(cut.offsets_rad)
+    floor_db = -80.0
+    comparison = cut.comparison
+    interferer_offset_deg = float(np.degrees(comparison.angular_distance_rad))
+    figure = go.Figure()
+    for label, values, color, dash in (
+        ("적용 전", cut.before_pattern_db, "gray", "dash"),
+        ("적용 후", cut.after_pattern_db, "purple", "solid"),
+    ):
+        figure.add_trace(
+            go.Scatter(
+                x=offsets_deg,
+                y=np.maximum(values, floor_db),
+                customdata=values,
+                mode="lines",
+                line=dict(color=color, width=2, dash=dash),
+                name=label,
+                hovertemplate=(
+                    "실제 각거리: %{x:.2f}°<br>"
+                    "목표 대비 배열 응답: %{customdata:.2f} dB<extra>"
+                    + label
+                    + "</extra>"
+                ),
+            )
+        )
+    figure.add_vline(
+        x=interferer_offset_deg,
+        line_width=1.5,
+        line_dash="dot",
+        line_color="red",
+        annotation_text=f"간섭원 {comparison.interferer_index}",
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=[interferer_offset_deg, interferer_offset_deg],
+            y=[
+                max(comparison.before_relative_db, floor_db),
+                max(comparison.after_relative_db, floor_db),
+            ],
+            customdata=[
+                comparison.before_relative_db,
+                comparison.after_relative_db,
+            ],
+            mode="markers",
+            marker=dict(color=["gray", "purple"], size=9),
+            name="간섭 방향 정확값",
+            hovertemplate=(
+                "간섭 방향: %{x:.2f}°<br>"
+                "목표 대비 배열 응답: %{customdata:.2f} dB<extra></extra>"
+            ),
+        )
+    )
+    figure.update_layout(
+        xaxis=dict(
+            title="목표 방향으로부터의 부호 있는 실제 각거리 (°)",
+            range=[-180.0, 180.0],
+        ),
+        yaxis=dict(title="목표 대비 배열 응답 (dB)", range=[floor_db, 5.0]),
+        margin=dict(l=30, r=30, t=25, b=30),
+        height=420,
+        legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center"),
+    )
+    return figure
+
+
 def render_pattern_tab(
     state: SimulationState,
     cuts: PatternCuts,
     great_circle_cuts: GreatCircleCuts,
+    interferer_great_circle_cuts: tuple[InterfererGreatCircleCut, ...],
     *,
     coordinate_option: str,
     scale_option: str,
@@ -167,10 +241,13 @@ def render_pattern_tab(
 ) -> None:
     st.subheader("방사 패턴 (Radiation Pattern)")
     left_column, right_column = st.columns(2)
+    target_azimuth_rad = np.radians(state.current_azimuth_deg)
+    target_elevation_rad = np.radians(state.current_elevation_deg)
     null_azimuth = (
         tuple(
             float(np.degrees(azimuth))
-            for azimuth, _ in state.weight_result.null_directions_rad
+            for azimuth, elevation in state.weight_result.null_directions_rad
+            if np.isclose(elevation, target_elevation_rad, atol=1e-10)
         )
         if state.config.enable_null_steering
         else ()
@@ -178,7 +255,12 @@ def render_pattern_tab(
     null_elevation = (
         tuple(
             float(np.degrees(elevation))
-            for _, elevation in state.weight_result.null_directions_rad
+            for azimuth, elevation in state.weight_result.null_directions_rad
+            if np.isclose(
+                np.angle(np.exp(1j * (azimuth - target_azimuth_rad))),
+                0.0,
+                atol=1e-10,
+            )
         )
         if state.config.enable_null_steering
         else ()
@@ -269,6 +351,47 @@ def render_pattern_tab(
         f"국부 {great_circle_cuts.local_sample_count}개 표본을 사용했습니다."
     )
 
+    if interferer_great_circle_cuts:
+        st.divider()
+        st.markdown("#### 간섭원 전용 Great-circle · Null 적용 전후 비교")
+        st.caption(
+            "각 컷은 목표 방향(0°)과 실제 간섭 방향을 정확히 지나는 구면 대원입니다. "
+            "동일한 배열·조향·결함·위상 양자화 조건에서 Null만 끈 결과를 적용 전으로 "
+            "사용합니다. 그래프는 배열 응답을 각 상태의 목표 응답으로 정규화하며, "
+            "-80 dB 아래 값은 화면 바닥에 표시하고 hover에는 실제 값을 제공합니다."
+        )
+        for cut in interferer_great_circle_cuts:
+            comparison = cut.comparison
+            azimuth_deg = np.degrees(comparison.azimuth_rad)
+            elevation_deg = np.degrees(comparison.elevation_rad)
+            with st.expander(
+                f"간섭원 {comparison.interferer_index} · "
+                f"Az {azimuth_deg:.1f}°, El {elevation_deg:.1f}°",
+                expanded=comparison.interferer_index == 1,
+            ):
+                with st.container(horizontal=True):
+                    st.metric(
+                        "적용 전 상대 응답",
+                        f"{comparison.before_relative_db:.2f} dB",
+                        border=True,
+                    )
+                    st.metric(
+                        "적용 후 상대 응답",
+                        f"{comparison.after_relative_db:.2f} dB",
+                        border=True,
+                    )
+                    st.metric(
+                        "추가 억압량",
+                        f"{comparison.additional_suppression_db:.2f} dB",
+                        border=True,
+                    )
+                st.plotly_chart(interferer_comparison_figure(cut), width="stretch")
+                st.caption(
+                    f"전역 {cut.base_sample_count}개 표본과 목표·간섭 방향 주변 "
+                    f"각 {cut.local_sample_count}개 국부 표본을 사용했습니다 "
+                    f"(세분화 반폭 ±{cut.refinement_half_width_deg:.2f}°)."
+                )
+
     st.divider()
     st.markdown("#### 3D 빔 패턴 (Spherical Surface)")
     if not render_3d:
@@ -349,4 +472,8 @@ def render_pattern_tab(
     )
 
 
-__all__ = ["pattern_figure", "render_pattern_tab"]
+__all__ = [
+    "interferer_comparison_figure",
+    "pattern_figure",
+    "render_pattern_tab",
+]
