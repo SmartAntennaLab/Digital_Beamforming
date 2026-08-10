@@ -16,6 +16,10 @@ from device_settings import (
     SCALE_OPTIONS,
     TAPER_OPTIONS,
 )
+from directivity_controls import (
+    render_directivity_mode_control,
+    render_directivity_policy_notice,
+)
 from model_options import (
     COORDINATE_LABELS,
     ELEMENT_PATTERN_LABELS,
@@ -28,15 +32,13 @@ from model_options import (
     option_label,
 )
 from resource_policy import ResourcePolicy, resource_limit_message
+from scan_controls import render_scan_controls
 from settings_storage import (
-    apply_persistent_settings,
     initialize_settings_storage,
-    next_storage_command,
     request_device_settings_clear,
     request_device_settings_save,
     request_share_link,
 )
-from scan_controls import render_scan_controls
 from simulation import SimulationConfig
 
 
@@ -194,6 +196,7 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
             key="element_option",
             persist_state="session",
         )
+        directivity_mode = render_directivity_mode_control()
         phase_bits = st.selectbox(
             "위상 천이기 해상도",
             PHASE_BIT_OPTIONS,
@@ -381,6 +384,40 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
             if enable_null and enable_amplitude_limit
             else None
         )
+        with st.expander("Null 최적화 고급 설정", expanded=False):
+            null_optimizer_max_iterations = int(
+                st.number_input(
+                    "최대 반복 횟수",
+                    min_value=50,
+                    max_value=2000,
+                    step=50,
+                    key="null_optimizer_max_iterations",
+                    persist_state="session",
+                    help="위상 전용 또는 진폭 제한 반복 최적화의 restart별 상한입니다.",
+                )
+            )
+            null_optimizer_tolerance = float(
+                st.select_slider(
+                    "수렴 허용오차",
+                    options=(1e-4, 1e-6, 1e-8, 1e-10, 1e-12),
+                    format_func=lambda value: f"{value:.0e}",
+                    key="null_optimizer_tolerance",
+                    persist_state="session",
+                    help="목적함수 개선량, gradient 또는 투영 이동량의 종료 기준입니다.",
+                )
+            )
+            null_optimizer_restart_count = int(
+                st.number_input(
+                    "Deterministic restart 수",
+                    min_value=1,
+                    max_value=8,
+                    step=1,
+                    disabled=null_optimization_mode != "phase_only",
+                    key="null_optimizer_restart_count",
+                    persist_state="session",
+                    help="위상 전용 비선형 최적화를 고정된 여러 초기 위상에서 반복합니다.",
+                )
+            )
         st.markdown("##### 시각화")
         scale_option = st.radio(
             "3D 빔 패턴 스케일",
@@ -480,6 +517,14 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
     scan_delay = scan_controls.scan_delay
     scan_mode = scan_controls.scan_mode
 
+    render_directivity_policy_notice(
+        policy,
+        mode=directivity_mode,
+        geometry=geometry,
+        vertical_count=vertical_count,
+        horizontal_count=horizontal_count,
+    )
+
     config = SimulationConfig(
         frequency_ghz=frequency_ghz,
         vertical_count=vertical_count,
@@ -489,6 +534,9 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
         geometry=geometry,
         taper_option=taper_option,
         element_option=element_option,
+        directivity_mode=directivity_mode,
+        directivity_warning_elements=policy.directivity_warning_elements,
+        directivity_exact_max_elements=policy.directivity_exact_max_elements,
         phase_bits=phase_bits,
         failure_rate_percent=failure_rate,
         target_azimuth_deg=target_azimuth,
@@ -499,6 +547,9 @@ def render_settings_panel(policy: ResourcePolicy) -> SettingsPanelResult:
         null_constraints_deg=tuple(null_constraints),
         null_optimization_mode=null_optimization_mode,
         maximum_element_amplitude=maximum_element_amplitude,
+        null_optimizer_tolerance=null_optimizer_tolerance,
+        null_optimizer_max_iterations=null_optimizer_max_iterations,
+        null_optimizer_restart_count=null_optimizer_restart_count,
     )
     requested_scan_frames = (
         azimuth_steps * elevation_steps if st.session_state.is_scanning else 1

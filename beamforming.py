@@ -29,6 +29,7 @@ from array_math import (
 from null_solver import (
     BeamformingWeights,
     ConstraintDiagnostics,
+    OptimizationTracePoint,
     compute_beamforming_weights,
 )
 from pattern_metrics import (
@@ -50,6 +51,7 @@ __all__ = [
     "GratingLobeAssessment",
     "GratingLobeDirection",
     "PatternMetrics",
+    "OptimizationTracePoint",
     "SteeringLimits",
     "array_factor",
     "assess_grating_lobes",

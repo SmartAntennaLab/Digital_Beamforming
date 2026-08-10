@@ -19,6 +19,7 @@ from ui_formatters import (
     format_response_error,
     format_sidelobe_metric,
     null_solver_label,
+    optimizer_convergence_label,
 )
 
 
@@ -60,18 +61,19 @@ def render_metrics_tab(
             border=True,
         )
 
+    mode_label = (
+        "정확"
+        if directivity.effective_mode == "exact"
+        else "고속 근사"
+        if directivity.effective_mode == "fast"
+        else "사용 불가"
+    )
+    if directivity.warning_message is not None:
+        st.warning(directivity.warning_message)
+    elif directivity.effective_mode == "fast":
+        st.info("Directivity는 고속 근사 전구 적분 결과입니다.")
+
     weight_result = state.weight_result
-    rank = (
-        f"{weight_result.constraint_rank}/{weight_result.constraint_count}"
-        if weight_result.constraint_rank is not None
-        else "N/A"
-    )
-    condition = (
-        f"{weight_result.condition_number:.3e}"
-        if weight_result.condition_number is not None
-        and np.isfinite(weight_result.condition_number)
-        else "∞"
-    )
     actual_null_depth = (
         weight_result.null_depths_db[0] if weight_result.null_depths_db else None
     )
@@ -98,6 +100,10 @@ def render_metrics_tab(
             "포화 소자",
             f"{weight_result.saturated_element_count}개",
         )
+        null_columns[5].metric(
+            "최적화 수렴",
+            optimizer_convergence_label(weight_result.optimizer_convergence_reason),
+        )
 
         continuous_diagnostics = weight_result.continuous_diagnostics
         final_diagnostics = weight_result.final_diagnostics
@@ -106,6 +112,15 @@ def render_metrics_tab(
             "상대 잔차는 요청한 목표 응답 크기로 정규화하며, 양자화 열화는 "
             "양수일수록 제약이 나빠졌음을 뜻합니다."
         )
+        if weight_result.optimizer_selected_restart is not None:
+            st.caption(
+                f"선택 restart {weight_result.optimizer_selected_restart}/"
+                f"{weight_result.optimizer_restart_count}, 선택해 "
+                f"{weight_result.optimizer_iterations}회·전체 "
+                f"{weight_result.optimizer_total_iterations}회 반복, "
+                f"허용오차 {weight_result.optimizer_tolerance:.1e}, "
+                f"restart별 상한 {weight_result.optimizer_max_iterations}회."
+            )
         with st.container(horizontal=True):
             st.metric(
                 "목표 응답 오차 · 연속해",
@@ -209,6 +224,28 @@ def render_metrics_tab(
                 hide_index=True,
                 width="stretch",
             )
+        if weight_result.optimizer_trace:
+            with st.expander("Null 최적화 반복 이력", expanded=False):
+                trace_rows = [
+                    {
+                        "Restart": point.restart_index,
+                        "선택": (
+                            point.restart_index
+                            == weight_result.optimizer_selected_restart
+                        ),
+                        "반복": point.iteration,
+                        "목적함수": point.objective,
+                        "최악 Null 상대 잔차 (dB)": point.worst_null_residual_db,
+                        "목표 방향 손실 (dB)": point.target_loss_db,
+                    }
+                    for point in weight_result.optimizer_trace
+                ]
+                st.dataframe(
+                    pd.DataFrame(trace_rows),
+                    hide_index=True,
+                    width="stretch",
+                    height=320,
+                )
 
     azimuth_metrics = cuts.azimuth_metrics
     elevation_metrics = cuts.elevation_metrics
@@ -270,8 +307,17 @@ def render_metrics_tab(
             f" · {directivity.azimuth_samples}×"
             f"{directivity.elevation_samples} 구면 표본"
         )
+    cache_detail = ""
+    if directivity.kernel_cache_used:
+        cache_detail = (
+            " · 기하 kernel cache hit"
+            if directivity.kernel_cache_hit
+            else " · 기하 kernel cache 생성"
+        )
     st.caption(
-        f"Directivity 적분: {integration_detail}; "
+        f"Directivity 계산 모드: {mode_label} · 소자 {directivity.element_count:,}개 · "
+        f"pairwise 규모 {directivity.pair_count:,}{cache_detail}. "
+        f"적분: {integration_detail}; "
         f"∫U dΩ={directivity.radiated_power_integral:.6g}, "
         f"목표 U={directivity.target_radiation_intensity:.6g}."
     )

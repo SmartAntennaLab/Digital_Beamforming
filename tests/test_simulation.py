@@ -9,6 +9,7 @@ from simulation import (
     build_simulation_state,
     calculate_great_circle_cuts,
     calculate_pattern_cuts,
+    calculate_state_directivity,
     calculate_surface_pattern,
     estimate_scan_timing,
     pattern_cut_local_sample_count,
@@ -21,6 +22,23 @@ from simulation import (
 
 
 class SimulationStateTests(unittest.TestCase):
+    def test_state_directivity_uses_configured_mode_and_limits(self):
+        state = build_simulation_state(
+            SimulationConfig(
+                vertical_count=3,
+                horizontal_count=3,
+                directivity_mode="auto",
+                directivity_warning_elements=8,
+                directivity_exact_max_elements=9,
+            )
+        )
+
+        result = calculate_state_directivity(state)
+
+        self.assertEqual(result.requested_mode, "auto")
+        self.assertEqual(result.effective_mode, "fast")
+        self.assertEqual(result.element_count, 9)
+
     def test_wavelength_uses_the_exact_si_speed_of_light(self):
         state = build_simulation_state(SimulationConfig(frequency_ghz=28.0))
 
@@ -88,6 +106,9 @@ class SimulationStateTests(unittest.TestCase):
                 ),
                 null_optimization_mode="phase_only",
                 maximum_element_amplitude=1.0,
+                null_optimizer_tolerance=1e-10,
+                null_optimizer_max_iterations=250,
+                null_optimizer_restart_count=3,
             )
         )
 
@@ -96,6 +117,9 @@ class SimulationStateTests(unittest.TestCase):
         self.assertEqual(result.null_required_suppression_db, (25.0, 25.0))
         self.assertEqual(result.optimization_mode, "phase_only")
         self.assertEqual(result.maximum_element_amplitude, 1.0)
+        self.assertEqual(result.optimizer_tolerance, 1e-10)
+        self.assertEqual(result.optimizer_max_iterations, 250)
+        self.assertEqual(result.optimizer_restart_count, 3)
         self.assertEqual(result.null_requirement_met, (True, True))
 
     def test_uha_state_counts_only_physical_elements(self):

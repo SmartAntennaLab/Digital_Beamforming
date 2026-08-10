@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-
 GEOMETRY_LABELS: dict[str, str] = {
     "UPA": "UPA (사각형 평면형)",
     "UHA": "UHA (균일 육각 평면형)",
@@ -23,6 +22,11 @@ ELEMENT_PATTERN_LABELS: dict[str, str] = {
     "cosine": "Cosine (코사인)",
     "cosine_squared": "Cosine² (코사인 제곱)",
     "dipole": "Dipole (다이폴)",
+}
+DIRECTIVITY_MODE_LABELS: dict[str, str] = {
+    "auto": "자동 (대형 배열은 고속 근사)",
+    "exact": "정확 (해석적 pairwise)",
+    "fast": "고속 근사 (비균일 전구 적분)",
 }
 PHASE_BIT_LABELS: dict[int | None, str] = {
     None: "Infinite (무한)",
@@ -53,6 +57,7 @@ NULL_OPTIMIZATION_MODE_LABELS: dict[str, str] = {
 GEOMETRY_OPTIONS = tuple(GEOMETRY_LABELS)
 TAPER_OPTIONS = tuple(TAPER_LABELS)
 ELEMENT_OPTIONS = tuple(ELEMENT_PATTERN_LABELS)
+DIRECTIVITY_MODE_OPTIONS = tuple(DIRECTIVITY_MODE_LABELS)
 PHASE_BIT_OPTIONS = tuple(PHASE_BIT_LABELS)
 SCALE_OPTIONS = tuple(SCALE_LABELS)
 COORDINATE_OPTIONS = tuple(COORDINATE_LABELS)

@@ -1,5 +1,5 @@
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import pattern_sampling
 import settings_panel
@@ -9,7 +9,6 @@ import ui_elements
 import ui_metrics
 import ui_pattern
 import ui_renderers
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

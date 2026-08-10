@@ -15,8 +15,6 @@ from compute_governor import (
 )
 from directivity import DIRECTIVITY_SCHEMA_VERSION
 from model_options import SCAN_MODE_LABELS, option_label
-from resource_policy import ResourcePolicy
-from settings_panel import render_settings_panel
 from pattern_sampling import (
     GREAT_CIRCLE_CUT_SCHEMA_VERSION,
     PATTERN_CUT_SCHEMA_VERSION,
@@ -24,6 +22,8 @@ from pattern_sampling import (
     calculate_surface_pattern,
     scan_surface_sampling,
 )
+from resource_policy import ResourcePolicy
+from settings_panel import render_settings_panel
 from simulation import scan_direction
 from simulation_cache import (
     cached_directivity,
@@ -36,7 +36,6 @@ from ui_elements import render_elements_tab
 from ui_metrics import render_metrics_tab
 from ui_pattern import render_pattern_tab
 from ui_renderers import render_diagnostics
-
 
 RESOURCE_POLICY = ResourcePolicy.from_environment()
 COMPUTE_GOVERNOR = get_compute_governor(RESOURCE_POLICY)

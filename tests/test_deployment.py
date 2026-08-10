@@ -1,8 +1,7 @@
 import json
-from pathlib import Path
 import tomllib
 import unittest
-
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,6 +32,11 @@ class DeploymentConfigurationTests(unittest.TestCase):
                     "setuptools==83.0.0",
                 ],
                 "e2e": ["playwright==1.61.0"],
+                "quality": [
+                    "coverage==7.15.4",
+                    "mypy==2.3.0",
+                    "ruff==0.16.2",
+                ],
             },
         )
         self.assertFalse((PROJECT_ROOT / "requirements.txt").exists())
@@ -48,7 +52,9 @@ class DeploymentConfigurationTests(unittest.TestCase):
             if package["name"] == "digital-beamforming-simulator"
         )
         self.assertEqual(project["version"], "1.5.0")
-        self.assertEqual(set(project["optional-dependencies"]), {"dev", "e2e"})
+        self.assertEqual(
+            set(project["optional-dependencies"]), {"dev", "e2e", "quality"}
+        )
         for package in packages:
             if "registry" not in package.get("source", {}):
                 continue
@@ -60,6 +66,27 @@ class DeploymentConfigurationTests(unittest.TestCase):
                 all(artifact["hash"].startswith("sha256:") for artifact in artifacts),
                 package["name"],
             )
+
+    def test_quality_gates_are_pinned_and_enforced(self):
+        project_config = tomllib.loads(
+            (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        tool_config = project_config["tool"]
+        self.assertEqual(
+            tool_config["ruff"]["lint"]["select"],
+            ["E4", "E7", "E9", "F", "I", "B", "UP"],
+        )
+        self.assertEqual(tool_config["mypy"]["python_version"], "3.11")
+        self.assertIn("directivity.py", tool_config["mypy"]["files"])
+        self.assertTrue(tool_config["coverage"]["run"]["branch"])
+        self.assertEqual(tool_config["coverage"]["report"]["fail_under"], 80)
+
+        performance_gate = (
+            PROJECT_ROOT / "benchmarks" / "check_performance_regression.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"DBF_PERF_EXACT_64_SECONDS", 5.0', performance_gate)
+        self.assertIn('"DBF_PERF_FAST_64_SECONDS", 6.0', performance_gate)
+        self.assertIn("> 0.5", performance_gate)
 
     def test_devcontainer_syncs_only_from_the_frozen_lock(self):
         config = json.loads(
@@ -116,6 +143,12 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertIn("uv sync --frozen", ci)
         self.assertIn("uv pip check", ci)
         self.assertIn("dependency-health.yml", ci)
+        self.assertIn("quality-gates:", ci)
+        self.assertIn("ruff check .", ci)
+        self.assertIn("mypy", ci)
+        self.assertIn("coverage run", ci)
+        self.assertIn("coverage report", ci)
+        self.assertIn("check_performance_regression.py", ci)
 
         self.assertIn("schedule:", dependency_health)
         self.assertIn("--all-extras", dependency_health)

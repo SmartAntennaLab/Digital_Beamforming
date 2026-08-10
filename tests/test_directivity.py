@@ -3,10 +3,18 @@ import unittest
 import numpy as np
 
 from beamforming import array_factor, element_pattern_factor
-from directivity import DIRECTIVITY_SCHEMA_VERSION, calculate_directivity
+from directivity import (
+    DIRECTIVITY_SCHEMA_VERSION,
+    calculate_directivity,
+    clear_pairwise_kernel_cache,
+    pairwise_kernel_cache_info,
+)
 
 
 class DirectivityTests(unittest.TestCase):
+    def setUp(self):
+        clear_pairwise_kernel_cache()
+
     def _single_element(self, element_option: str):
         return calculate_directivity(
             np.array([0.0]),
@@ -149,6 +157,116 @@ class DirectivityTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(checks), 10)
+
+    def test_pairwise_kernel_cache_reuses_normalized_geometry(self):
+        y = np.arange(8, dtype=float) * 0.5
+        z = np.zeros(8)
+        weights = np.ones(8, dtype=complex)
+        first = calculate_directivity(
+            y, z, weights, 1.0, 0.0, 0.0, "isotropic", directivity_mode="exact"
+        )
+        second = calculate_directivity(
+            2.0 * y,
+            2.0 * z,
+            weights,
+            2.0,
+            0.1,
+            0.0,
+            "isotropic",
+            directivity_mode="exact",
+        )
+
+        self.assertTrue(first.kernel_cache_used)
+        self.assertFalse(first.kernel_cache_hit)
+        self.assertTrue(second.kernel_cache_hit)
+        self.assertEqual(pairwise_kernel_cache_info().entries, 1)
+
+    def test_auto_and_exact_cap_select_fast_mode_with_reason(self):
+        y = np.arange(6, dtype=float) * 0.5
+        z = np.zeros(6)
+        weights = np.ones(6, dtype=complex)
+        automatic = calculate_directivity(
+            y,
+            z,
+            weights,
+            1.0,
+            0.0,
+            0.0,
+            "isotropic",
+            directivity_mode="auto",
+            warning_element_count=4,
+        )
+        capped = calculate_directivity(
+            y,
+            z,
+            weights,
+            1.0,
+            0.0,
+            0.0,
+            "isotropic",
+            directivity_mode="exact",
+            warning_element_count=4,
+            exact_max_elements=5,
+        )
+
+        for result in (automatic, capped):
+            self.assertEqual(result.effective_mode, "fast")
+            self.assertTrue(result.is_approximate)
+            self.assertIsNotNone(result.warning_message)
+            self.assertEqual(result.element_count, 6)
+            self.assertEqual(result.pair_count, 36)
+        self.assertIn("상한", capped.warning_message)
+
+    def test_explicit_large_exact_mode_records_pairwise_warning(self):
+        result = calculate_directivity(
+            np.arange(6, dtype=float) * 0.5,
+            np.zeros(6),
+            np.ones(6, dtype=complex),
+            1.0,
+            0.0,
+            0.0,
+            "isotropic",
+            directivity_mode="exact",
+            warning_element_count=4,
+            exact_max_elements=8,
+        )
+
+        self.assertEqual(result.effective_mode, "exact")
+        self.assertFalse(result.is_approximate)
+        self.assertIn("36", result.warning_message)
+
+    def test_fast_quadrature_tracks_exact_planar_array_directivity(self):
+        axis = (np.arange(16, dtype=float) - 7.5) * 0.5
+        y, z = np.meshgrid(axis, axis)
+        weights = np.ones_like(y, dtype=complex)
+        exact = calculate_directivity(
+            y, z, weights, 1.0, 0.0, 0.0, "isotropic", directivity_mode="exact"
+        )
+        fast = calculate_directivity(
+            y, z, weights, 1.0, 0.0, 0.0, "isotropic", directivity_mode="fast"
+        )
+
+        self.assertAlmostEqual(fast.directivity_dbi, exact.directivity_dbi, delta=0.2)
+        self.assertGreaterEqual(fast.azimuth_samples, 64)
+        self.assertGreaterEqual(fast.elevation_samples, 33)
+        self.assertIn("fast approximation", fast.integration_method)
+
+    def test_fast_quadrature_checks_for_cancellation(self):
+        checks = []
+        calculate_directivity(
+            np.arange(32, dtype=float) * 0.5,
+            np.zeros(32),
+            np.ones(32, dtype=complex),
+            1.0,
+            0.0,
+            0.0,
+            "isotropic",
+            directivity_mode="fast",
+            max_chunk_entries=64,
+            cancel_check=lambda: checks.append(True),
+        )
+
+        self.assertGreater(len(checks), 10)
 
 
 if __name__ == "__main__":

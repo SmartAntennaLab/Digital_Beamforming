@@ -13,10 +13,12 @@ ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 �
 - Isotropic, Cosine, Cosine², Z축 반파장 Dipole 소자 패턴
 - 고정 시드의 재현 가능한 소자 결함 시뮬레이션
 - 최대 8개 간섭원, 방향별 요구 억압량, SVD/위상 전용 null 최적화와 진폭 상한
+- 위상 전용 deterministic restart와 진폭 제한 bound-constrained 재최적화
 - 요구 null 미달 방향, 양자화 전·후 제약 잔차와 진폭 포화 소자 진단
 - 고정 좌표각 Azimuth/Elevation 컷, 목표 방향 Great-circle 주평면 컷, 3D 구면 패턴
 - 소자 배치 탭에서 수평·수직 간격과 전체 배열 길이를 파장·cm로 표시하고 전체·활성·결함 소자 수 집계
 - 좌표각·실제 각거리 HPBW, FNBW, SLL, 상대 배열 이득, 전구 적분 Directivity, 테이퍼·위상 효율
+- Directivity 자동·정확·고속 근사 모드, 대형 배열 상한·경고와 동일 기하 kernel 캐시
 - 형상별 격자 로브 또는 공간 앨리어싱 위험 진단
 - CSV 패턴 데이터와 Markdown 설계 보고서 다운로드
 - 동적 탭, form, fragment와 각도·소자 청크 기반 대규모 배열 계산
@@ -29,11 +31,12 @@ ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 �
 
 - 좌표각 HPBW와 목표 방향을 지나는 Great-circle 실제 각거리 HPBW 분리
 - 최종 가중치의 전구 방사전력 적분 기반 directional directivity 추가
+- Directivity O(N²) 정확 모드와 O(N×S) 고속 근사 모드, 자동 전환·상한·기하 캐시 추가
 - 다중 null, 방향별 요구 억압량, 위상 전용 최적화, 소자 진폭 상한과 미달·포화 진단 추가
 - 패턴·지표·소자 UI, 설정 저장, 스캔 제어, 패턴 표본화 모듈 분리
 - 동시 계산·대기열·세션 호출률·deadline·취소 및 자원 상한 보호 추가
 
-일반 환경의 전체 회귀 검사 결과는 **130개 통과, 브라우저 E2E 1개 skip**입니다. E2E는 `RUN_E2E=1`인 GitHub Actions 전용 단계에서 Chromium으로 별도 실행합니다.
+일반 환경의 전체 회귀 검사 결과는 **142개 통과, 브라우저 E2E 1개 skip**입니다. E2E는 `RUN_E2E=1`인 GitHub Actions 전용 단계에서 Chromium으로 별도 실행합니다.
 
 ## 지원 환경
 
@@ -59,13 +62,14 @@ Streamlit 1.60 자체는 Python 3.10–3.14를 지원하지만, 이 프로젝트
 | pandas | 2.3.3 | CSV 내보내기 데이터 구성 |
 | psutil | 7.2.2 | 프로세스 CPU·RSS와 시스템 자원 모니터링 |
 
-`pyproject.toml`은 Python 범위를 `>=3.11,<3.15`로 제한하고 의존성을 세 그룹으로 분리합니다.
+`pyproject.toml`은 Python 범위를 `>=3.11,<3.15`로 제한하고 의존성을 네 그룹으로 분리합니다.
 
 | 그룹 | 설치 대상 |
 |---|---|
 | 기본 런타임 | Streamlit, NumPy, Plotly, pandas, psutil |
 | `dev` extra | pip, pip-audit, pip-licenses, setuptools |
 | `e2e` extra | Playwright |
+| `quality` extra | Coverage.py 7.15.4, Ruff 0.16.2, mypy 2.3.0 |
 
 `uv.lock`은 위 직접 의존성과 모든 전이 의존성의 정확한 버전, 운영체제·Python 마커, 배포 파일 SHA-256을 함께 기록하는 단일 잠금 소스입니다. 수동으로 편집하지 말고 `uv lock`으로만 갱신합니다. 이 프로젝트가 검증한 uv 버전은 **0.11.29**입니다.
 
@@ -139,6 +143,19 @@ uv run --frozen --no-sync python -m unittest discover -s tests -t . -v
 
 테스트는 UHA 좌표·실제 소자 마스크, 수학 회귀, 형상 정합성, null 조향, 청크 계산, 대규모 배열, 동적 탭과 fragment 자동 스캔을 포함합니다.
 
+정적 검사, 수치 코어 타입 검사, branch coverage와 대표 성능 기준을 로컬에서 CI와 동일하게 실행하려면:
+
+```bash
+uv sync --frozen --extra quality
+uv run --frozen --no-sync ruff check .
+uv run --frozen --no-sync mypy
+uv run --frozen --no-sync coverage run -m unittest tests.test_beamforming tests.test_directivity tests.test_simulation tests.test_resource_policy
+uv run --frozen --no-sync coverage report
+uv run --frozen --no-sync python benchmarks/check_performance_regression.py
+```
+
+Coverage.py는 UI 계층을 제외한 수치 코어의 statement와 branch를 함께 측정하며 최소 **80%**를 요구합니다. 2026-08-10 기준 측정값은 **87.3%**입니다. mypy는 동일 수치 코어 9개 모듈을 검사하고 Ruff는 전체 Python 저장소에서 import, 오류 가능 문법, pyupgrade와 bugbear 규칙을 검사합니다.
+
 실제 JavaScript `localStorage` 저장·새 세션 복원·새로고침을 검증하려면 별도 브라우저 의존성을 설치합니다.
 
 ```powershell
@@ -148,7 +165,7 @@ $env:RUN_E2E = "1"
 uv run --frozen --no-sync python -m unittest tests.e2e.test_local_storage -v
 ```
 
-일반 단위 테스트에서는 이 E2E가 자동으로 skip됩니다. GitHub Actions는 Windows와 Linux에서 Python 3.11·3.14 잠금 설치 및 단위 테스트를 실행하고, Linux Python 3.11에서 Chromium E2E를 실행합니다.
+일반 단위 테스트에서는 이 E2E가 자동으로 skip됩니다. GitHub Actions는 Windows와 Linux에서 Python 3.11·3.14 잠금 설치 및 단위 테스트를 실행하고, Linux Python 3.11에서 Chromium E2E를 실행합니다. 별도 Linux Python 3.11 `quality-gates` job이 Ruff, mypy, branch coverage, 64×64 Directivity 성능 회귀를 순차적으로 차단 기준으로 적용합니다.
 
 개발·E2E 도구를 포함한 전체 잠금 집합을 검사하려면 다음 명령을 사용합니다.
 
@@ -183,6 +200,9 @@ Digital_Beamforming/
 │   ├── nginx.conf.example     # TLS·Basic Auth·IP rate/connection limit 예제
 │   ├── digital-beamforming.service.example # systemd CPU·메모리 quota 예제
 │   └── README.md              # 공개 서버 보호·모니터링 운영 절차
+├── benchmarks/
+│   ├── benchmark_directivity.py # 64×64 이상 지향도 시간·peak RSS 측정
+│   └── README.md              # 실행법과 기준 측정 결과
 ├── tests/
 │   ├── e2e/
 │   │   └── test_local_storage.py # 실제 localStorage 새로고침·복원 테스트
@@ -202,6 +222,7 @@ Digital_Beamforming/
 ├── device_settings.py         # 장치별 설정 스키마·검증·공유 토큰
 ├── device_storage.py          # Streamlit CCv2 localStorage 브리지
 ├── directivity.py             # 전구 방사전력 적분과 목표 방향 지향도
+├── directivity_controls.py    # Directivity 계산 모드와 대형 배열 경고 UI
 ├── exporters.py               # CSV·Markdown 내보내기
 ├── model_options.py           # 안정적인 내부 ID와 한글 UI 라벨
 ├── null_solver.py             # SVD 제한 최소제곱과 진단
@@ -267,9 +288,13 @@ ULA와 UPA의 격자 로브는 축별 간격을 사용한 복제 방향 `u_y+p/(
 
 Null 조향은 배열 인자와 동일한 조향 벡터로 목표 응답 보존과 최대 8개 간섭 방향 응답 0의 제약식을 구성합니다. UI에서 각 간섭원의 Azimuth/Elevation과 요구 억압량을 개별 입력합니다. 진폭·위상 동시 제어는 진폭 가중 제어 공간의 제약 행렬을 `A=UΣVᴴ`로 직접 SVD 분해하고 `δ=VΣ⁻¹Uᴴ(d-Au₀)`인 최소노름 보정을 적용합니다. `AAᴴ` Gram matrix나 정규방정식을 만들지 않으므로 조건수를 제곱시키지 않습니다. 제약 행렬의 rank가 부족하거나 condition number가 허용 범위를 넘으면 기본 조향 가중치로 안전하게 되돌아갑니다.
 
-위상 전용 모드는 기준 테이퍼 진폭을 고정하고, SVD 해의 위상을 초기값으로 사용한 뒤 목표 응답 오차와 방향별 요구 억압량으로 정규화한 null 잔차를 projected-gradient 방식으로 반복 최소화합니다. 최대 소자 진폭 제한을 사용하면 기준 진폭과 SVD 복소 가중치 모두 설정한 상한을 넘지 않도록 투영합니다. 진폭 상한, 위상 전용 제약 또는 최종 위상 양자화 때문에 정확한 null이 불가능할 수 있으므로, 최종 null 깊이가 방향별 요구량을 충족하는지 별도로 판정합니다.
+위상 전용 모드는 기준 테이퍼 진폭을 고정하고 SVD 해, 기본 조향해와 고정 시드 위상 섭동을 사용하는 여러 초기점에서 projected-gradient 최적화를 수행합니다. 모든 restart는 같은 조건에서 재현 가능하며 최종 가중 목적함수가 가장 작은 해를 선택합니다. 고급 설정에서 restart 수, restart별 최대 반복 횟수와 수렴 허용오차를 조정할 수 있습니다.
 
-성능 탭과 Markdown 설계 보고서는 연속 제약해와 최종 위상 양자화해를 각각 다시 평가합니다. `r=Cw-d`에 대해 목표 응답 절대·상대 오차, 각 null의 절대 잔차와 목표 응답으로 정규화한 dB 잔차, 전체 제약 잔차 노름의 양자화 열화, 최대 소자 진폭과 총 가중치 전력 `Σ|wₙ|²`를 표시합니다. 요구 억압 충족 수와 미달 방향, 진폭 상한에 도달한 포화 소자 수를 함께 표시하며 안테나 배치 도표에서는 포화 소자를 주황색 외곽선으로 구분합니다. 잔차 열화는 `20 log10(r_final/r_continuous)`로 정의하여 양수가 클수록 양자화로 제약이 더 나빠졌음을 뜻합니다.
+최대 소자 진폭 제한을 사용하면 SVD 해를 한 번 clipping하고 끝내지 않습니다. clipping 결과를 초기점으로 사용해 각 활성 소자의 복소 가중치를 `|wₙ|≤w_max` 원판에 반복 투영하는 bound-constrained weighted least-squares를 수행합니다. 이 최적화는 진폭 상한을 유지하면서 목표 응답과 방향별 null 잔차를 다시 줄이며, 초기 clipping 목적함수보다 나빠지는 해는 채택하지 않습니다.
+
+두 반복 최적화는 각 반복과 선탐색 경계에서 현재 계산 lease의 취소·deadline callback을 확인합니다. 결과에는 수렴 사유, 허용오차, 반복 상한, 선택 restart, 선택해·전체 반복 수, 최종 목적함수와 매 반복의 최악 null 상대 잔차 및 목표 방향 손실이 기록됩니다. 진폭 상한, 위상 전용 제약 또는 최종 위상 양자화 때문에 정확한 null이 불가능할 수 있으므로, 최종 null 깊이가 방향별 요구량을 충족하는지도 별도로 판정합니다.
+
+성능 탭과 Markdown 설계 보고서는 연속 제약해와 최종 위상 양자화해를 각각 다시 평가합니다. `r=Cw-d`에 대해 목표 응답 절대·상대 오차, 각 null의 절대 잔차와 목표 응답으로 정규화한 dB 잔차, 전체 제약 잔차 노름의 양자화 열화, 최대 소자 진폭과 총 가중치 전력 `Σ|wₙ|²`를 표시합니다. 성능 탭의 반복 이력 표에서는 restart·반복별 목적함수, 최악 null 상대 잔차와 목표 방향 손실을 확인할 수 있습니다. 요구 억압 충족 수와 미달 방향, 진폭 상한에 도달한 포화 소자 수를 함께 표시하며 안테나 배치 도표에서는 포화 소자를 주황색 외곽선으로 구분합니다. 잔차 열화는 `20 log10(r_final/r_continuous)`로 정의하여 양수가 클수록 양자화로 제약이 더 나빠졌음을 뜻합니다.
 
 ## 지표 정의
 
@@ -330,7 +355,17 @@ D_target = 4π U(target) / ∫sphere U(φ,θ) dΩ
 Directivity = 10 log10(D_target) dBi
 ```
 
-Isotropic, Cosine, Cosine² 소자 패턴은 소자 쌍별 전구 적분 커널을 사용해 제한된 3D 표시 메시와 무관하게 방사전력 적분을 계산합니다. Z축 반파장 Dipole은 `sin(Elevation)` 축의 Gauss–Legendre 구적과 주기 Azimuth 구적으로 전구를 적분하며 사용한 표본 수를 화면에 표시합니다. 모든 가중치가 0이거나 방사전력 분모가 수치적으로 유효하지 않으면 `N/A`입니다.
+사이드바에서 다음 세 계산 모드를 선택할 수 있으며 실제 적용 모드와 전환 사유는 성능 지표와 설계 리포트에 기록됩니다.
+
+| 모드 | 동작 |
+|---|---|
+| 자동 | 활성 소자 1,024개까지 정확 모드, 그보다 크면 고속 근사 |
+| 정확 | Isotropic/Cosine 계열의 해석적 O(N²) pairwise 적분. 1,024개 초과 경고, 4,096개 초과 시 고속 근사로 안전 전환 |
+| 고속 근사 | 목표·반대 방향 국부 표본을 보강한 비균일 O(N×S) 전구 수치 적분 |
+
+정확 모드의 Isotropic, Cosine, Cosine² 소자 패턴은 제한된 3D 표시 메시와 무관한 소자 쌍별 전구 적분 커널을 사용합니다. 1,024소자 이하에서 동일한 `위치/파장` 정규화 기하와 소자 패턴의 kernel은 프로세스 내 32 MiB LRU 캐시로 재사용합니다. 정확 모드의 Z축 반파장 Dipole은 `sin(Elevation)` 축의 Gauss–Legendre 구적과 주기 Azimuth 구적을 사용합니다. 고속 모드는 모든 소자 패턴에 비균일 전구 적분을 적용하고 사용한 표본 수를 화면에 표시합니다. 모든 가중치가 0이거나 방사전력 분모가 수치적으로 유효하지 않으면 `N/A`입니다.
+
+재현 가능한 64×64·128×128 시간·메모리 측정은 [Directivity 벤치마크](benchmarks/README.md)를 참고하십시오.
 
 표시값은 조향 **목표 방향의 directional directivity**입니다. 실제 최대 방사 방향이 목표에서 벗어난 특이 설정에서는 패턴 전체의 최대 directivity와 다를 수 있습니다. 또한 급전·RF 손실과 상호 결합을 포함하지 않으므로 realized gain이 아닙니다. 3D 표면은 계속 시각화 전용이며 directivity 적분의 분모로 재사용하지 않습니다.
 
@@ -371,6 +406,8 @@ enableXsrfProtection = true
 | 정책 | 기본값 | 코드상 절대 상한 |
 |---|---:|---:|
 | 실제 소자 수 | 4,096 | 16,384 |
+| Directivity 정확 모드 경고 소자 수 | 1,024 | 4,096 |
+| Directivity 정확 모드 소자 상한 | 4,096 | 4,096 |
 | 스캔 프레임 | 400 | 1,000 |
 | 누적 element-frames | 1,000,000 | 4,000,000 |
 | 프로세스 동시 계산 | 2 | 32 |
@@ -379,7 +416,7 @@ enableXsrfProtection = true
 | 세션 계산 빈도 | 분당 120회 | 분당 600회 |
 | 세션 순간 burst | 8회 | 60회 |
 
-운영 환경에서는 기존 `DBF_MAX_ELEMENTS`, `DBF_MAX_SCAN_FRAMES`, `DBF_MAX_SCAN_ELEMENT_FRAMES` 외에 `DBF_MAX_CONCURRENT_CALCULATIONS`, `DBF_COMPUTE_QUEUE_TIMEOUT_SECONDS`, `DBF_COMPUTE_TIMEOUT_SECONDS`, `DBF_SESSION_CALCULATIONS_PER_MINUTE`, `DBF_SESSION_BURST`, `DBF_HEALTH_LOG_INTERVAL_SECONDS`를 지정할 수 있습니다. 프로세스 전체 semaphore가 동시 계산을 제한하고, 세션별 token bucket이 반복 계산을 완화합니다. 계산 deadline과 사용자 취소는 배열 인자의 각도·소자 청크 경계에서 확인하므로 진행 중인 NumPy 호출 하나는 완료된 뒤 중단됩니다.
+운영 환경에서는 기존 `DBF_MAX_ELEMENTS`, `DBF_MAX_SCAN_FRAMES`, `DBF_MAX_SCAN_ELEMENT_FRAMES` 외에 `DBF_DIRECTIVITY_WARNING_ELEMENTS`, `DBF_DIRECTIVITY_EXACT_MAX_ELEMENTS`, `DBF_MAX_CONCURRENT_CALCULATIONS`, `DBF_COMPUTE_QUEUE_TIMEOUT_SECONDS`, `DBF_COMPUTE_TIMEOUT_SECONDS`, `DBF_SESSION_CALCULATIONS_PER_MINUTE`, `DBF_SESSION_BURST`, `DBF_HEALTH_LOG_INTERVAL_SECONDS`를 지정할 수 있습니다. 프로세스 전체 semaphore가 동시 계산을 제한하고, 세션별 token bucket이 반복 계산을 완화합니다. 계산 deadline과 사용자 취소는 배열 인자의 각도·소자 청크 경계에서 확인하므로 진행 중인 NumPy 호출 하나는 완료된 뒤 중단됩니다.
 
 사이드바 `서버 계산 상태`에서 동시·대기 계산, CPU와 메모리, 거절·시간 초과·취소 누계를 확인할 수 있으며 동일 정보가 `compute_health` 구조화 로그로 주기적으로 출력됩니다. 이 제한은 애플리케이션 프로세스 내부 보호이며 사용자 인증, 여러 replica 전체의 전역 제한 또는 운영체제 quota를 대신하지 않습니다. 공개 배포에서는 [deploy/README.md](deploy/README.md)의 Nginx Basic Auth·IP rate limit 예제와 systemd CPU·메모리 제한을 함께 적용하십시오.
 
@@ -405,7 +442,7 @@ Community Cloud는 `uv.lock`과 `pyproject.toml`을 사용해 기본 런타임 �
 - `2D 전용`과 `3D 미리보기`는 중지 또는 완료 시 마지막 조향 방향을 유지한 채 전체 품질 3D를 한 번 다시 계산합니다. UI의 프레임·총 시간은 64×64 전체 품질 프레임 약 0.85초를 기준으로 한 경험적 추정치이며 실행 CPU와 활성 탭에 따라 달라집니다.
 - 배열 인자는 각도 또는 소자 축을 자동 청크 처리하고 필요하면 두 축을 함께 나눕니다.
 - 좌표각·Great-circle 2D 컷은 전역 격자에 최대 129개의 목표 주변 표본을 추가해 대규모 배열의 HPBW, FNBW와 초기 부엽을 세분화합니다.
-- Directivity는 성능 지표 탭을 열 때만 계산하고 제한된 캐시에 저장합니다. 소자 쌍 적분과 Dipole 구적 모두 계산 취소·시간 제한을 확인합니다.
+- Directivity는 성능 지표 탭을 열 때만 계산하고 제한된 결과 캐시에 저장합니다. 1,024소자 이하의 해석 kernel은 정규화 기하별 32 MiB LRU 캐시에 저장하며, 대형 배열은 자동으로 비균일 전구 적분을 사용합니다. 모든 적분 경로가 계산 취소·시간 제한을 확인합니다.
 - 3D 패턴은 배열 크기에 따라 전역 각도 해상도를 제한하고, 좁은 주엽을 놓치지 않도록 목표 방향 주변만 적응형으로 세분화합니다.
 - Streamlit 데이터 캐시는 `max_entries`로 상한을 둡니다.
 

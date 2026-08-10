@@ -5,6 +5,7 @@ from unittest.mock import patch
 from resource_policy import (
     HARD_MAX_COMPUTE_SECONDS,
     HARD_MAX_CONCURRENT_CALCULATIONS,
+    HARD_MAX_DIRECTIVITY_EXACT_ELEMENTS,
     HARD_MAX_ELEMENTS,
     HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE,
     ResourcePolicy,
@@ -94,6 +95,23 @@ class ResourcePolicyTests(unittest.TestCase):
         self.assertLessEqual(
             policy.session_burst,
             policy.session_calculations_per_minute,
+        )
+
+    def test_directivity_thresholds_are_bounded_and_ordered(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DBF_DIRECTIVITY_WARNING_ELEMENTS": "99999",
+                "DBF_DIRECTIVITY_EXACT_MAX_ELEMENTS": "2048",
+            },
+        ):
+            policy = ResourcePolicy.from_environment()
+
+        self.assertEqual(policy.directivity_warning_elements, 2_048)
+        self.assertEqual(policy.directivity_exact_max_elements, 2_048)
+        self.assertLessEqual(
+            policy.directivity_exact_max_elements,
+            HARD_MAX_DIRECTIVITY_EXACT_ELEMENTS,
         )
 
 

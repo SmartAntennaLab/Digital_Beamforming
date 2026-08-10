@@ -36,6 +36,7 @@ def cached_state(
         config,
         current_azimuth_deg=azimuth_deg,
         current_elevation_deg=elevation_deg,
+        cancel_check=check_current_computation,
     )
     check_current_computation()
     return state

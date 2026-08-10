@@ -5,19 +5,20 @@ from __future__ import annotations
 import base64
 import json
 import math
-from collections.abc import Mapping, Sequence
-from typing import Any, Callable
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from model_options import (
     COORDINATE_LABELS,
     COORDINATE_OPTIONS,
+    DIRECTIVITY_MODE_LABELS,
     ELEMENT_OPTIONS,
     ELEMENT_PATTERN_LABELS,
     GEOMETRY_LABELS,
     GEOMETRY_OPTIONS,
-    PHASE_BIT_LABELS,
     NULL_OPTIMIZATION_MODE_LABELS,
     NULL_OPTIMIZATION_MODE_OPTIONS,
+    PHASE_BIT_LABELS,
     PHASE_BIT_OPTIONS,
     SCALE_LABELS,
     SCALE_OPTIONS,
@@ -28,7 +29,7 @@ from model_options import (
     normalize_option_id,
 )
 
-DEVICE_SETTINGS_SCHEMA_VERSION = 4
+DEVICE_SETTINGS_SCHEMA_VERSION = 6
 DEVICE_STORAGE_KEY = "digital_beamforming.settings.v1"
 
 DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
@@ -42,6 +43,7 @@ DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
     "vertical_spacing": 0.5,
     "taper_option": "uniform",
     "element_option": "isotropic",
+    "directivity_mode": "auto",
     "phase_bits": None,
     "failure_rate": 0,
     "target_azimuth": 0.0,
@@ -54,6 +56,9 @@ DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
     "null_optimization_mode": "amplitude_phase",
     "enable_amplitude_limit": False,
     "max_element_amplitude": 1.0,
+    "null_optimizer_tolerance": 1e-8,
+    "null_optimizer_max_iterations": 400,
+    "null_optimizer_restart_count": 4,
     "scale_option": "db",
     "coordinate_option": "polar",
     "show_3db": True,
@@ -168,6 +173,7 @@ SETTING_VALIDATORS: dict[str, Callable[[object], object]] = {
     "vertical_spacing": _finite_float(0.1, 1.0),
     "taper_option": _option(TAPER_LABELS),
     "element_option": _option(ELEMENT_PATTERN_LABELS),
+    "directivity_mode": _option(DIRECTIVITY_MODE_LABELS),
     "phase_bits": _option(PHASE_BIT_LABELS),
     "failure_rate": _bounded_int(0, 50),
     "target_azimuth": _finite_float(-90.0, 90.0),
@@ -180,6 +186,9 @@ SETTING_VALIDATORS: dict[str, Callable[[object], object]] = {
     "null_optimization_mode": _option(NULL_OPTIMIZATION_MODE_LABELS),
     "enable_amplitude_limit": _boolean,
     "max_element_amplitude": _finite_float(0.05, 10.0),
+    "null_optimizer_tolerance": _finite_float(1e-12, 1e-3),
+    "null_optimizer_max_iterations": _bounded_int(50, 2000),
+    "null_optimizer_restart_count": _bounded_int(1, 8),
     "scale_option": _option(SCALE_LABELS),
     "coordinate_option": _option(COORDINATE_LABELS),
     "show_3db": _boolean,
@@ -207,7 +216,7 @@ def sanitize_device_settings(settings: object) -> dict[str, object]:
         return {}
     if "settings" in settings:
         version = settings.get("schema_version")
-        if version not in {1, 2, 3, DEVICE_SETTINGS_SCHEMA_VERSION}:
+        if version not in {1, 2, 3, 4, 5, DEVICE_SETTINGS_SCHEMA_VERSION}:
             return {}
         settings = settings.get("settings")
         if not isinstance(settings, Mapping):

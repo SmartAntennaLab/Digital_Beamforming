@@ -25,6 +25,7 @@ from ui_formatters import (
     format_residual_db,
     format_response_error,
     null_solver_label,
+    optimizer_convergence_label,
     spacing_text,
     steering_axes_text,
 )
@@ -114,6 +115,18 @@ def build_design_report(
     directivity_method = (
         directivity.integration_method if directivity is not None else "N/A"
     )
+    directivity_mode = (
+        "정확"
+        if directivity is not None and directivity.effective_mode == "exact"
+        else "고속 근사"
+        if directivity is not None and directivity.effective_mode == "fast"
+        else "N/A"
+    )
+    directivity_warning = (
+        directivity.warning_message
+        if directivity is not None and directivity.warning_message is not None
+        else "없음"
+    )
     weight_result = state.weight_result
     rank = (
         f"{weight_result.constraint_rank}/{weight_result.constraint_count}"
@@ -143,7 +156,30 @@ def build_design_report(
         final = weight_result.final_diagnostics
         lines = [
             f"- 해법: {null_solver_label(weight_result.solver_method)}",
-            f"- 최적화 반복: {weight_result.optimizer_iterations}회",
+            (
+                "- 최적화 수렴: "
+                f"{optimizer_convergence_label(weight_result.optimizer_convergence_reason)}"
+            ),
+            (
+                "- 최적화 반복: 선택해 "
+                f"{weight_result.optimizer_iterations}회 / 전체 "
+                f"{weight_result.optimizer_total_iterations}회"
+            ),
+            (
+                "- 최적화 설정: 허용오차 "
+                f"{weight_result.optimizer_tolerance:.1e}, restart별 상한 "
+                f"{weight_result.optimizer_max_iterations}회, 선택 restart "
+                f"{weight_result.optimizer_selected_restart or 'N/A'} / "
+                f"{weight_result.optimizer_restart_count}"
+            ),
+            (
+                "- 최종 최적화 목적함수: "
+                + (
+                    f"{weight_result.optimizer_final_objective:.6e}"
+                    if weight_result.optimizer_final_objective is not None
+                    else "N/A"
+                )
+            ),
             f"- 최대 소자 진폭 제한: {amplitude_limit_text}",
             f"- 포화 소자: {weight_result.saturated_element_count}개",
             (
@@ -183,6 +219,22 @@ def build_design_report(
                 )
             ),
         ]
+        if weight_result.optimizer_trace:
+            selected_trace = [
+                point
+                for point in weight_result.optimizer_trace
+                if point.restart_index == weight_result.optimizer_selected_restart
+            ]
+            if selected_trace:
+                first_point = selected_trace[0]
+                last_point = selected_trace[-1]
+                lines.append(
+                    "- 선택 restart 이력(초기 → 최종): 최악 Null 상대 잔차 "
+                    f"{first_point.worst_null_residual_db!s} dB → "
+                    f"{last_point.worst_null_residual_db!s} dB, 목표 방향 손실 "
+                    f"{first_point.target_loss_db!s} dB → "
+                    f"{last_point.target_loss_db!s} dB"
+                )
         for index, (azimuth_rad, elevation_rad) in enumerate(
             weight_result.null_directions_rad
         ):
@@ -233,7 +285,9 @@ def build_design_report(
 
 - 상대 배열 이득: {relative_array_gain}
 - 목표 방향 Directivity: {directivity_text}
+- Directivity 계산 모드: {directivity_mode}
 - Directivity 전구 적분: {directivity_method}
+- Directivity 계산 경고: {directivity_warning}
 - 활성 소자: {gain.active_elements} / {gain.total_elements}
 - 테이퍼 효율: {100.0 * gain.taper_efficiency:.2f}%
 - 위상·조향 효율: {100.0 * gain.phase_efficiency:.2f}%

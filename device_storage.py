@@ -9,7 +9,6 @@ import streamlit as st
 
 from device_settings import DEVICE_STORAGE_KEY
 
-
 _COMPONENT_HTML = """
 <span aria-hidden="true" hidden></span>
 """

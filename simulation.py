@@ -63,6 +63,9 @@ class SimulationConfig:
     geometry: str = "UPA"
     taper_option: str = "uniform"
     element_option: str = "isotropic"
+    directivity_mode: str = "auto"
+    directivity_warning_elements: int = 1_024
+    directivity_exact_max_elements: int = 4_096
     phase_bits: int | None = None
     failure_rate_percent: float = 0.0
     target_azimuth_deg: float = 0.0
@@ -73,6 +76,9 @@ class SimulationConfig:
     null_constraints_deg: tuple[tuple[float, float, float], ...] = ()
     null_optimization_mode: str = "amplitude_phase"
     maximum_element_amplitude: float | None = None
+    null_optimizer_tolerance: float = 1e-8
+    null_optimizer_max_iterations: int = 400
+    null_optimizer_restart_count: int = 4
 
 
 @dataclass(frozen=True)
@@ -130,9 +136,12 @@ def build_simulation_state(
     *,
     current_azimuth_deg: float | None = None,
     current_elevation_deg: float | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> SimulationState:
     """Build one deterministic beamforming state from a UI-independent config."""
 
+    if cancel_check is not None:
+        cancel_check()
     if config.frequency_ghz <= 0.0 or not np.isfinite(config.frequency_ghz):
         raise ValueError("Frequency must be a finite positive value.")
     if config.horizontal_spacing_wavelength <= 0.0 or not np.isfinite(
@@ -181,16 +190,18 @@ def build_simulation_state(
 
     azimuth_rad = np.radians(azimuth_deg)
     elevation_rad = np.radians(elevation_deg)
-    null_specs = ()
+    null_specs: tuple[tuple[float, float, float], ...] = ()
     if config.enable_null_steering:
         null_specs = config.null_constraints_deg or (
             (config.null_azimuth_deg, config.null_elevation_deg, 40.0),
         )
-    null_directions = tuple(
-        (np.radians(azimuth), np.radians(elevation))
+    null_directions: tuple[tuple[float, float], ...] = tuple(
+        (float(np.radians(azimuth)), float(np.radians(elevation)))
         for azimuth, elevation, _ in null_specs
     )
-    required_suppression = tuple(float(suppression) for _, _, suppression in null_specs)
+    required_suppression: tuple[float, ...] = tuple(
+        float(suppression) for _, _, suppression in null_specs
+    )
     weight_result = compute_beamforming_weights(
         coordinates.y,
         coordinates.z,
@@ -205,6 +216,10 @@ def build_simulation_state(
             config.maximum_element_amplitude if config.enable_null_steering else None
         ),
         optimization_mode=config.null_optimization_mode,
+        optimizer_tolerance=config.null_optimizer_tolerance,
+        optimizer_max_iterations=config.null_optimizer_max_iterations,
+        optimizer_restart_count=config.null_optimizer_restart_count,
+        cancel_check=cancel_check,
     )
     complex_weights = weight_result.weights
     gain_metrics = calculate_array_gain_metrics(
@@ -309,6 +324,9 @@ def calculate_state_directivity(
         state.config.element_option,
         element_mask=state.coordinates.element_mask,
         max_chunk_entries=max_chunk_entries,
+        directivity_mode=state.config.directivity_mode,
+        warning_element_count=state.config.directivity_warning_elements,
+        exact_max_elements=state.config.directivity_exact_max_elements,
         cancel_check=cancel_check,
     )
 

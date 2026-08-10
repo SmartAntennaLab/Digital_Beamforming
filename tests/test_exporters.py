@@ -1,6 +1,6 @@
 import unittest
 
-from exporters import build_export_artifacts, build_design_report
+from exporters import build_design_report, build_export_artifacts
 from simulation import (
     SimulationConfig,
     build_simulation_state,
@@ -72,7 +72,9 @@ class ExporterTests(unittest.TestCase):
         self.assertIn("포화 소자:", report)
         self.assertIn("요구 억압 충족:", report)
         self.assertIn("요구 40.0 dB", report)
-        self.assertIn("(미달)", report)
+        self.assertIn("(충족)", report)
+        self.assertIn("최적화 수렴:", report)
+        self.assertIn("선택 restart 이력", report)
 
 
 if __name__ == "__main__":

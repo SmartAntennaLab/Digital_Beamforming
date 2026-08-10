@@ -1,10 +1,9 @@
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
 from device_settings import decode_share_token, encode_share_token
-
 
 APP_PATH = Path(__file__).resolve().parents[1] / "main.py"
 
@@ -111,11 +110,15 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         metric_values = {item.label: item.value for item in self.app.metric}
         self.assertIn("억압 요구 충족", metric_values)
         self.assertIn("포화 소자", metric_values)
-        self.assertEqual(len(self.app.dataframe), 1)
+        self.assertEqual(len(self.app.dataframe), 2)
         table = self.app.dataframe[0].value
         self.assertEqual(len(table), 2)
         self.assertIn("요구 억압", table.columns)
         self.assertIn("충족 여부", table.columns)
+        trace_table = self.app.dataframe[1].value
+        self.assertIn("목적함수", trace_table.columns)
+        self.assertIn("최악 Null 상대 잔차 (dB)", trace_table.columns)
+        self.assertIn("목표 방향 손실 (dB)", trace_table.columns)
 
     def test_undetected_pattern_metrics_render_as_na(self):
         single_element = AppTest.from_file(str(APP_PATH), default_timeout=30)

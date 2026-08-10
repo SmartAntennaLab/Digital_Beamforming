@@ -909,12 +909,40 @@ class PatternMetricAndNullTests(unittest.TestCase):
         self.assertTrue(result.null_applied)
         self.assertEqual(result.solver_method, "phase_only_projected_gradient")
         self.assertGreater(result.optimizer_iterations, 0)
+        self.assertGreaterEqual(
+            result.optimizer_total_iterations,
+            result.optimizer_iterations,
+        )
+        self.assertIn(result.optimizer_selected_restart, range(1, 5))
+        self.assertEqual(result.optimizer_restart_count, 4)
+        self.assertNotEqual(result.optimizer_convergence_reason, "not_run")
+        self.assertIsNotNone(result.optimizer_final_objective)
+        selected_trace = [
+            point
+            for point in result.optimizer_trace
+            if point.restart_index == result.optimizer_selected_restart
+        ]
+        self.assertEqual(len(selected_trace), result.optimizer_iterations + 1)
+        self.assertTrue(
+            all(
+                later.objective <= earlier.objective
+                for earlier, later in zip(
+                    selected_trace, selected_trace[1:], strict=False
+                )
+            )
+        )
+        self.assertTrue(
+            all(point.worst_null_residual_db is not None for point in selected_trace)
+        )
+        self.assertTrue(
+            all(point.target_loss_db is not None for point in selected_trace)
+        )
         np.testing.assert_allclose(np.abs(result.continuous_weights), 1.0)
         self.assertEqual(result.null_required_suppression_db, (25.0, 25.0))
         self.assertEqual(result.null_requirement_met, (True, True))
         self.assertLess(result.final_diagnostics.target_relative_error, 0.02)
 
-    def test_amplitude_limit_reports_saturation_and_unmet_directions(self):
+    def test_amplitude_limit_reoptimizes_after_projection(self):
         coordinates = create_array_coordinates(1, 16, 0.5, "ULA")
         result = compute_beamforming_weights(
             coordinates.y,
@@ -932,13 +960,135 @@ class PatternMetricAndNullTests(unittest.TestCase):
         )
 
         self.assertLessEqual(np.max(np.abs(result.weights)), 1.0 + 1.0e-12)
+        self.assertEqual(result.solver_method, "bounded_projected_gradient")
         self.assertGreater(result.saturated_element_count, 0)
         self.assertEqual(
             result.saturated_element_count,
             int(np.count_nonzero(result.saturated_element_mask)),
         )
-        self.assertIn(False, result.null_requirement_met)
-        self.assertIsNotNone(result.diagnostic_message)
+        self.assertEqual(result.null_requirement_met, (True, True))
+        self.assertGreater(result.optimizer_iterations, 0)
+        self.assertGreater(len(result.optimizer_trace), 1)
+        self.assertLess(
+            result.optimizer_trace[-1].objective,
+            result.optimizer_trace[0].objective,
+        )
+        self.assertLess(
+            result.optimizer_trace[-1].worst_null_residual_db,
+            result.optimizer_trace[0].worst_null_residual_db,
+        )
+
+    def test_phase_only_restarts_are_deterministic_and_never_worse_than_single_start(
+        self,
+    ):
+        coordinates = create_array_coordinates(1, 16, 0.5, "ULA")
+        arguments = dict(
+            y=coordinates.y,
+            z=coordinates.z,
+            wavelength_m=1.0,
+            target_azimuth_rad=0.0,
+            target_elevation_rad=0.0,
+            amplitude_weights=np.ones_like(coordinates.y),
+            null_directions_rad=[
+                (np.radians(-25.0), 0.0),
+                (np.radians(32.0), 0.0),
+            ],
+            null_required_suppression_db=[35.0, 35.0],
+            optimization_mode="phase_only",
+            optimizer_max_iterations=100,
+        )
+        single = compute_beamforming_weights(
+            **arguments,
+            optimizer_restart_count=1,
+        )
+        first = compute_beamforming_weights(
+            **arguments,
+            optimizer_restart_count=4,
+        )
+        second = compute_beamforming_weights(
+            **arguments,
+            optimizer_restart_count=4,
+        )
+
+        self.assertLessEqual(
+            first.optimizer_final_objective,
+            single.optimizer_final_objective + 1e-15,
+        )
+        np.testing.assert_allclose(first.continuous_weights, second.continuous_weights)
+        self.assertEqual(first.optimizer_trace, second.optimizer_trace)
+        self.assertEqual(
+            first.optimizer_selected_restart,
+            second.optimizer_selected_restart,
+        )
+
+    def test_iterative_null_optimizer_checks_cancellation_inside_loop(self):
+        coordinates = create_array_coordinates(1, 16, 0.5, "ULA")
+        check_count = 0
+
+        def cancel_check():
+            nonlocal check_count
+            check_count += 1
+            if check_count >= 5:
+                raise RuntimeError("cancelled in optimizer")
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled in optimizer"):
+            compute_beamforming_weights(
+                coordinates.y,
+                coordinates.z,
+                1.0,
+                0.0,
+                0.0,
+                np.ones_like(coordinates.y),
+                null_directions_rad=[
+                    (np.radians(-25.0), 0.0),
+                    (np.radians(32.0), 0.0),
+                ],
+                optimization_mode="phase_only",
+                optimizer_tolerance=1e-12,
+                optimizer_max_iterations=400,
+                cancel_check=cancel_check,
+            )
+        self.assertGreaterEqual(check_count, 5)
+
+    def test_optimizer_settings_are_validated_and_iteration_limit_is_reported(self):
+        coordinates = create_array_coordinates(1, 16, 0.5, "ULA")
+        result = compute_beamforming_weights(
+            coordinates.y,
+            coordinates.z,
+            1.0,
+            0.0,
+            0.0,
+            np.ones_like(coordinates.y),
+            null_direction_rad=(np.radians(23.0), 0.0),
+            optimization_mode="phase_only",
+            optimizer_tolerance=1e-15,
+            optimizer_max_iterations=1,
+            optimizer_restart_count=1,
+        )
+        self.assertEqual(result.optimizer_max_iterations, 1)
+        self.assertEqual(result.optimizer_tolerance, 1e-15)
+        self.assertEqual(result.optimizer_convergence_reason, "max_iterations")
+
+        with self.assertRaisesRegex(ValueError, "maximum iterations"):
+            compute_beamforming_weights(
+                coordinates.y,
+                coordinates.z,
+                1.0,
+                0.0,
+                0.0,
+                np.ones_like(coordinates.y),
+                optimizer_max_iterations=0,
+            )
+        with self.assertRaisesRegex(ValueError, "restart count"):
+            compute_beamforming_weights(
+                coordinates.y,
+                coordinates.z,
+                1.0,
+                0.0,
+                0.0,
+                np.ones_like(coordinates.y),
+                optimizer_restart_count=0,
+            )
 
     def test_each_null_direction_requires_one_suppression_value(self):
         coordinates = create_array_coordinates(1, 8, 0.5, "ULA")

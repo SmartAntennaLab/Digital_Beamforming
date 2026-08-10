@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
 import logging
 import math
 import os
 import threading
 import time
-from typing import Callable, Protocol
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from typing import Protocol
 
 import psutil
 
 from resource_policy import ResourcePolicy
-
 
 LOGGER = logging.getLogger("digital_beamforming.compute")
 LOGGER.setLevel(logging.INFO)

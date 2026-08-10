@@ -9,9 +9,9 @@ import streamlit as st
 from beamforming import SteeringLimits
 from device_settings import SCAN_MODE_OPTIONS
 from model_options import SCAN_MODE_LABELS, option_label
+from pattern_sampling import scan_surface_sampling
 from resource_policy import ResourcePolicy, estimate_element_count
 from settings_storage import request_device_settings_save
-from pattern_sampling import scan_surface_sampling
 from simulation import estimate_scan_timing
 
 

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TypeAlias
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from array_math import steering_phases
-
 
 FloatArray: TypeAlias = NDArray[np.float64]
 ComplexArray: TypeAlias = NDArray[np.complex128]
@@ -102,12 +101,14 @@ def array_factor(
             effective_angle_chunk = angle_count
             effective_element_chunk = max(1, max_chunk_entries // angle_count)
     elif effective_angle_chunk is None:
+        assert effective_element_chunk is not None
         effective_element_chunk = min(effective_element_chunk, element_count)
         effective_angle_chunk = max(
             1,
             min(angle_count, max_chunk_entries // effective_element_chunk),
         )
     elif effective_element_chunk is None:
+        assert effective_angle_chunk is not None
         effective_angle_chunk = min(effective_angle_chunk, angle_count)
         effective_element_chunk = max(
             1,
@@ -122,6 +123,8 @@ def array_factor(
                 max_chunk_entries // effective_angle_chunk,
             )
 
+    assert effective_angle_chunk is not None
+    assert effective_element_chunk is not None
     result = np.zeros(angle_count, dtype=complex)
     y_flat = y_array.ravel()
     z_flat = z_array.ravel()
@@ -385,6 +388,7 @@ def calculate_pattern_metrics(
         if hpbw_left_angle is not None and hpbw_right_angle is not None:
             hpbw_deg = float(np.degrees(hpbw_right_angle - hpbw_left_angle))
         elif hpbw_left_angle is not None:
+            assert hpbw_left is not None
             hpbw_right_angle = 2.0 * angles[peak_index] - hpbw_left_angle
             hpbw_right = min(
                 values.size - 1,
@@ -392,6 +396,7 @@ def calculate_pattern_metrics(
             )
             hpbw_deg = float(2.0 * np.degrees(angles[peak_index] - hpbw_left_angle))
         elif hpbw_right_angle is not None:
+            assert hpbw_right is not None
             hpbw_left_angle = 2.0 * angles[peak_index] - hpbw_right_angle
             hpbw_left = max(
                 0,

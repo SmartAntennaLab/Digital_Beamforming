@@ -78,11 +78,25 @@ def format_degradation(degradation_db: float | None) -> str:
 def null_solver_label(method: str) -> str:
     return {
         "svd_minimum_norm": "SVD 최소노름",
+        "bounded_projected_gradient": "진폭 제한 투영 최소제곱",
         "phase_only_projected_gradient": "위상 전용 반복 최적화",
         "svd_rejected": "SVD 조건 불량",
         "svd_failed": "SVD 계산 실패",
         "not_requested": "미사용",
     }.get(method, method)
+
+
+def optimizer_convergence_label(reason: str) -> str:
+    return {
+        "not_run": "반복 최적화 미사용",
+        "gradient_tolerance": "Gradient 허용오차 충족",
+        "objective_tolerance": "목적함수 개선 허용오차 충족",
+        "projected_step_tolerance": "투영 이동량 허용오차 충족",
+        "step_tolerance": "선탐색 최소 스텝 도달",
+        "max_iterations": "최대 반복 도달",
+        "degenerate_system": "퇴화 제약계",
+        "non_finite_gradient": "비유한 Gradient 감지",
+    }.get(reason, reason)
 
 
 def steering_axes_text(state: SimulationState) -> str:

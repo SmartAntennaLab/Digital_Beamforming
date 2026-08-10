@@ -120,6 +120,9 @@ class DeviceSettingsTests(unittest.TestCase):
             "null_optimization_mode": "phase_only",
             "enable_amplitude_limit": True,
             "max_element_amplitude": 0.8,
+            "null_optimizer_tolerance": 1e-10,
+            "null_optimizer_max_iterations": 800,
+            "null_optimizer_restart_count": 6,
         }
 
         self.assertEqual(sanitize_device_settings(settings), settings)
@@ -129,6 +132,13 @@ class DeviceSettingsTests(unittest.TestCase):
             sanitize_device_settings({"null_optimization_mode": "unsupported"}),
             {},
         )
+
+    def test_directivity_mode_is_persisted_and_validated(self):
+        settings = {"directivity_mode": "fast"}
+
+        self.assertEqual(sanitize_device_settings(settings), settings)
+        self.assertEqual(decode_share_token(encode_share_token(settings)), settings)
+        self.assertEqual(sanitize_device_settings({"directivity_mode": "invalid"}), {})
 
     def test_collect_ignores_transient_session_values(self):
         collected = collect_device_settings(

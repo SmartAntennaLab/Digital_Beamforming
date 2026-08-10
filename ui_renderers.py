@@ -43,6 +43,11 @@ def render_diagnostics(state: SimulationState) -> None:
                 f"{directions}. 진폭 상한, 위상 전용 모드 또는 위상 양자화 조건을 "
                 "완화하세요."
             )
+        elif result.optimizer_convergence_reason == "max_iterations":
+            st.warning(
+                "⚠️ Null 최적화가 설정된 최대 반복 횟수에 도달했습니다. "
+                "성능 지표 탭의 수렴 이력을 확인하거나 반복 상한을 늘리세요."
+            )
 
     assessment = state.grating_assessment
     if not assessment.has_aliasing_risk:

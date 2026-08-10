@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import os
-
+from dataclasses import dataclass
 
 HARD_MAX_ELEMENTS = 16_384
+HARD_MAX_DIRECTIVITY_EXACT_ELEMENTS = 4_096
 HARD_MAX_SCAN_FRAMES = 1_000
 HARD_MAX_SCAN_ELEMENT_FRAMES = 4_000_000
 HARD_MAX_CONCURRENT_CALCULATIONS = 32
@@ -53,6 +53,8 @@ class ResourcePolicy:
     """Maximum work accepted from one browser session request."""
 
     max_elements: int = 4_096
+    directivity_warning_elements: int = 1_024
+    directivity_exact_max_elements: int = 4_096
     max_scan_frames: int = 400
     max_scan_element_frames: int = 1_000_000
     max_concurrent_calculations: int = 2
@@ -63,7 +65,7 @@ class ResourcePolicy:
     health_log_interval_seconds: float = 30.0
 
     @classmethod
-    def from_environment(cls) -> "ResourcePolicy":
+    def from_environment(cls) -> ResourcePolicy:
         """Load bounded operator overrides without exceeding hard limits."""
 
         calculations_per_minute = _bounded_environment_int(
@@ -79,12 +81,27 @@ class ResourcePolicy:
             ),
             calculations_per_minute,
         )
+        directivity_exact_max_elements = _bounded_environment_int(
+            "DBF_DIRECTIVITY_EXACT_MAX_ELEMENTS",
+            cls.directivity_exact_max_elements,
+            HARD_MAX_DIRECTIVITY_EXACT_ELEMENTS,
+        )
+        directivity_warning_elements = min(
+            _bounded_environment_int(
+                "DBF_DIRECTIVITY_WARNING_ELEMENTS",
+                cls.directivity_warning_elements,
+                HARD_MAX_DIRECTIVITY_EXACT_ELEMENTS,
+            ),
+            directivity_exact_max_elements,
+        )
         return cls(
             max_elements=_bounded_environment_int(
                 "DBF_MAX_ELEMENTS",
                 cls.max_elements,
                 HARD_MAX_ELEMENTS,
             ),
+            directivity_warning_elements=directivity_warning_elements,
+            directivity_exact_max_elements=directivity_exact_max_elements,
             max_scan_frames=_bounded_environment_int(
                 "DBF_MAX_SCAN_FRAMES",
                 cls.max_scan_frames,

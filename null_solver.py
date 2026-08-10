@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -10,7 +10,6 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from array_math import parse_phase_bits, quantize_phases, steering_vector
-
 
 FloatArray: TypeAlias = NDArray[np.float64]
 ComplexArray: TypeAlias = NDArray[np.complex128]
@@ -29,6 +28,17 @@ class ConstraintDiagnostics:
     constraint_relative_residual_norm: float | None
     max_amplitude: float
     total_weight_power: float
+
+
+@dataclass(frozen=True)
+class OptimizationTracePoint:
+    """One deterministic optimizer checkpoint."""
+
+    restart_index: int
+    iteration: int
+    objective: float
+    worst_null_residual_db: float | None
+    target_loss_db: float | None
 
 
 @dataclass(frozen=True)
@@ -62,7 +72,26 @@ class BeamformingWeights:
     saturated_element_mask: BoolArray
     saturated_element_count: int
     optimizer_iterations: int
+    optimizer_total_iterations: int
+    optimizer_max_iterations: int
+    optimizer_tolerance: float
+    optimizer_restart_count: int
+    optimizer_selected_restart: int | None
+    optimizer_convergence_reason: str
+    optimizer_final_objective: float | None
+    optimizer_trace: tuple[OptimizationTracePoint, ...]
     diagnostic_message: str | None
+
+
+@dataclass(frozen=True)
+class _OptimizationResult:
+    weights: ComplexArray
+    iterations: int
+    total_iterations: int
+    selected_restart: int
+    convergence_reason: str
+    final_objective: float
+    trace: tuple[OptimizationTracePoint, ...]
 
 
 def _relative_null_depths_db(
@@ -110,6 +139,7 @@ def _constraint_diagnostics(
     residual_norm_value = float(np.linalg.norm(residual))
     residual_norm = residual_norm_value if np.isfinite(residual_norm_value) else None
     target_scale = _finite_magnitude(desired_response[0])
+    null_relative_residuals: tuple[float | None, ...]
     if target_scale is None or target_scale <= 0.0:
         target_relative_error = None
         null_relative_residuals = tuple(None for _ in null_residuals)
@@ -166,20 +196,19 @@ def _requirement_status(
     )
 
 
-def _phase_only_optimize(
+def _weighted_constraint_system(
     constraint_matrix: ComplexArray,
     desired_response: ComplexArray,
-    fixed_amplitudes: FloatArray,
-    initial_weights: ComplexArray,
     required_suppression_db: tuple[float, ...],
-    *,
-    max_iterations: int = 400,
-) -> tuple[ComplexArray, int]:
-    """Minimize weighted target/null residuals with fixed element magnitudes."""
+) -> tuple[ComplexArray, ComplexArray]:
+    """Scale target/null rows without allowing large dB weights to overflow."""
 
     target_scale = float(np.abs(desired_response[0]))
     if target_scale <= 0.0 or not np.isfinite(target_scale):
-        return np.asarray(initial_weights, dtype=complex).copy(), 0
+        return (
+            np.asarray(constraint_matrix, dtype=complex).copy(),
+            np.asarray(desired_response, dtype=complex).copy(),
+        )
 
     null_weights = np.asarray(
         [
@@ -190,48 +219,359 @@ def _phase_only_optimize(
     )
     target_weight = max(100.0, float(np.max(null_weights, initial=1.0)))
     row_weights = np.concatenate(([target_weight], null_weights))
-    weighted_matrix = constraint_matrix * row_weights[:, None] / target_scale
-    weighted_desired = desired_response * row_weights / target_scale
+    row_weights /= float(np.max(row_weights, initial=1.0))
+    return (
+        constraint_matrix * row_weights[:, None] / target_scale,
+        desired_response * row_weights / target_scale,
+    )
+
+
+def _optimization_trace_point(
+    constraint_matrix: ComplexArray,
+    desired_response: ComplexArray,
+    weights: ComplexArray,
+    *,
+    restart_index: int,
+    iteration: int,
+    objective: float,
+) -> OptimizationTracePoint:
+    responses = constraint_matrix @ weights
+    desired_target = float(np.abs(desired_response[0]))
+    actual_target = float(np.abs(responses[0])) if responses.size else 0.0
+    if (
+        desired_target <= 0.0
+        or not np.isfinite(desired_target)
+        or not np.isfinite(actual_target)
+    ):
+        target_loss_db = None
+    else:
+        target_ratio = max(actual_target / desired_target, 1.0e-15)
+        target_loss_db = float(-20.0 * np.log10(target_ratio))
+
+    if responses.size <= 1 or actual_target <= 0.0 or not np.isfinite(actual_target):
+        worst_null_residual_db = None
+    else:
+        worst_null = float(np.max(np.abs(responses[1:])))
+        if np.isfinite(worst_null):
+            ratio = max(worst_null / actual_target, 1.0e-15)
+            worst_null_residual_db = float(20.0 * np.log10(ratio))
+        else:
+            worst_null_residual_db = None
+
+    return OptimizationTracePoint(
+        restart_index=restart_index,
+        iteration=iteration,
+        objective=float(objective),
+        worst_null_residual_db=worst_null_residual_db,
+        target_loss_db=target_loss_db,
+    )
+
+
+def _objective(
+    weighted_matrix: ComplexArray,
+    weighted_desired: ComplexArray,
+    weights: ComplexArray,
+) -> float:
+    residual = weighted_matrix @ weights - weighted_desired
+    return float(np.vdot(residual, residual).real)
+
+
+def _phase_only_single_restart(
+    constraint_matrix: ComplexArray,
+    desired_response: ComplexArray,
+    weighted_matrix: ComplexArray,
+    weighted_desired: ComplexArray,
+    fixed_amplitudes: FloatArray,
+    initial_weights: ComplexArray,
+    *,
+    restart_index: int,
+    max_iterations: int,
+    tolerance: float,
+    cancel_check: Callable[[], None] | None,
+) -> _OptimizationResult:
+    """Run one projected phase-gradient solve from a supplied initial phase."""
 
     phases = np.angle(initial_weights)
     weights = fixed_amplitudes * np.exp(1j * phases)
-
-    def objective(candidate: ComplexArray) -> float:
-        residual = weighted_matrix @ candidate - weighted_desired
-        return float(np.vdot(residual, residual).real)
-
     best_weights = np.asarray(weights, dtype=complex).copy()
-    best_objective = objective(best_weights)
+    best_objective = _objective(weighted_matrix, weighted_desired, best_weights)
+    trace = [
+        _optimization_trace_point(
+            constraint_matrix,
+            desired_response,
+            best_weights,
+            restart_index=restart_index,
+            iteration=0,
+            objective=best_objective,
+        )
+    ]
     step = 0.25
     completed_iterations = 0
-    for iteration in range(max_iterations):
+    convergence_reason = "max_iterations"
+    for iteration in range(1, max_iterations + 1):
+        if cancel_check is not None:
+            cancel_check()
         residual = weighted_matrix @ weights - weighted_desired
         gradient = -2.0 * np.imag(
             weights * (weighted_matrix.T @ np.conjugate(residual))
         )
         gradient_scale = float(np.max(np.abs(gradient), initial=0.0))
-        if not np.isfinite(gradient_scale) or gradient_scale < 1.0e-12:
+        if not np.isfinite(gradient_scale):
+            convergence_reason = "non_finite_gradient"
+            break
+        if gradient_scale <= tolerance:
+            convergence_reason = "gradient_tolerance"
             break
 
-        candidate_phases = phases - step * gradient / gradient_scale
-        candidate_weights = fixed_amplitudes * np.exp(1j * candidate_phases)
-        candidate_objective = objective(candidate_weights)
-        if candidate_objective < best_objective:
-            phases = candidate_phases
-            weights = candidate_weights
-            best_weights = np.asarray(candidate_weights, dtype=complex).copy()
-            improvement = best_objective - candidate_objective
-            best_objective = candidate_objective
-            step = min(0.5, step * 1.05)
-            completed_iterations = iteration + 1
-            if improvement <= 1.0e-12 * max(1.0, best_objective):
+        trial_step = step
+        candidate_weights = weights
+        candidate_phases = phases
+        candidate_objective = best_objective
+        while trial_step >= 1.0e-10:
+            if cancel_check is not None:
+                cancel_check()
+            trial_phases = phases - trial_step * gradient / gradient_scale
+            trial_weights = fixed_amplitudes * np.exp(1j * trial_phases)
+            trial_objective = _objective(
+                weighted_matrix,
+                weighted_desired,
+                trial_weights,
+            )
+            if np.isfinite(trial_objective) and trial_objective < best_objective:
+                candidate_phases = trial_phases
+                candidate_weights = trial_weights
+                candidate_objective = trial_objective
                 break
-        else:
-            step *= 0.5
-            if step < 1.0e-8:
-                break
+            trial_step *= 0.5
 
-    return best_weights, completed_iterations
+        if candidate_objective >= best_objective:
+            convergence_reason = "step_tolerance"
+            break
+
+        previous_objective = best_objective
+        phases = candidate_phases
+        weights = candidate_weights
+        best_weights = np.asarray(candidate_weights, dtype=complex).copy()
+        best_objective = candidate_objective
+        step = min(0.5, trial_step * 1.05)
+        completed_iterations = iteration
+        trace.append(
+            _optimization_trace_point(
+                constraint_matrix,
+                desired_response,
+                best_weights,
+                restart_index=restart_index,
+                iteration=iteration,
+                objective=best_objective,
+            )
+        )
+        improvement = previous_objective - best_objective
+        if improvement <= tolerance * max(1.0, abs(previous_objective)):
+            convergence_reason = "objective_tolerance"
+            break
+
+    return _OptimizationResult(
+        weights=best_weights,
+        iterations=completed_iterations,
+        total_iterations=completed_iterations,
+        selected_restart=restart_index,
+        convergence_reason=convergence_reason,
+        final_objective=best_objective,
+        trace=tuple(trace),
+    )
+
+
+def _phase_only_optimize(
+    constraint_matrix: ComplexArray,
+    desired_response: ComplexArray,
+    fixed_amplitudes: FloatArray,
+    initial_weights: ComplexArray,
+    required_suppression_db: tuple[float, ...],
+    *,
+    max_iterations: int,
+    tolerance: float,
+    restart_count: int,
+    cancel_check: Callable[[], None] | None,
+) -> _OptimizationResult:
+    """Minimize fixed-amplitude residuals using deterministic multi-starts."""
+
+    weighted_matrix, weighted_desired = _weighted_constraint_system(
+        constraint_matrix,
+        desired_response,
+        required_suppression_db,
+    )
+    base_phases = np.angle(initial_weights)
+    target_phases = np.angle(np.conjugate(constraint_matrix[0]))
+    initial_candidates = [
+        fixed_amplitudes * np.exp(1j * base_phases),
+        fixed_amplitudes * np.exp(1j * target_phases),
+    ]
+    rng = np.random.default_rng(0xD1BF)
+    while len(initial_candidates) < restart_count:
+        restart_number = len(initial_candidates)
+        scale = min(1.0, 0.25 + 0.25 * (restart_number - 1))
+        perturbation = rng.uniform(-np.pi, np.pi, size=base_phases.shape) * scale
+        initial_candidates.append(
+            fixed_amplitudes * np.exp(1j * (base_phases + perturbation))
+        )
+
+    results: list[_OptimizationResult] = []
+    all_trace: list[OptimizationTracePoint] = []
+    total_iterations = 0
+    for restart_index, candidate in enumerate(
+        initial_candidates[:restart_count],
+        start=1,
+    ):
+        if cancel_check is not None:
+            cancel_check()
+        result = _phase_only_single_restart(
+            constraint_matrix,
+            desired_response,
+            weighted_matrix,
+            weighted_desired,
+            fixed_amplitudes,
+            candidate,
+            restart_index=restart_index,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            cancel_check=cancel_check,
+        )
+        results.append(result)
+        all_trace.extend(result.trace)
+        total_iterations += result.iterations
+
+    selected = min(results, key=lambda item: item.final_objective)
+    return _OptimizationResult(
+        weights=selected.weights,
+        iterations=selected.iterations,
+        total_iterations=total_iterations,
+        selected_restart=selected.selected_restart,
+        convergence_reason=selected.convergence_reason,
+        final_objective=selected.final_objective,
+        trace=tuple(all_trace),
+    )
+
+
+def _project_complex_bounds(
+    weights: ComplexArray,
+    bounds: FloatArray,
+) -> ComplexArray:
+    magnitudes = np.abs(weights)
+    scale = np.ones_like(magnitudes, dtype=float)
+    nonzero = magnitudes > 0.0
+    scale[nonzero] = np.minimum(1.0, bounds[nonzero] / magnitudes[nonzero])
+    projected = np.asarray(weights * scale, dtype=complex)
+    projected[bounds <= 0.0] = 0.0
+    return projected
+
+
+def _bounded_complex_optimize(
+    constraint_matrix: ComplexArray,
+    desired_response: ComplexArray,
+    initial_weights: ComplexArray,
+    bounds: FloatArray,
+    required_suppression_db: tuple[float, ...],
+    *,
+    max_iterations: int,
+    tolerance: float,
+    cancel_check: Callable[[], None] | None,
+) -> _OptimizationResult:
+    """Solve weighted complex least squares under per-element disk bounds."""
+
+    weighted_matrix, weighted_desired = _weighted_constraint_system(
+        constraint_matrix,
+        desired_response,
+        required_suppression_db,
+    )
+    weights = _project_complex_bounds(initial_weights, bounds)
+    best_objective = _objective(weighted_matrix, weighted_desired, weights)
+    trace = [
+        _optimization_trace_point(
+            constraint_matrix,
+            desired_response,
+            weights,
+            restart_index=1,
+            iteration=0,
+            objective=best_objective,
+        )
+    ]
+    spectral_norm = float(np.linalg.norm(weighted_matrix, ord=2))
+    if not np.isfinite(spectral_norm) or spectral_norm <= 0.0:
+        return _OptimizationResult(
+            weights=weights,
+            iterations=0,
+            total_iterations=0,
+            selected_restart=1,
+            convergence_reason="degenerate_system",
+            final_objective=best_objective,
+            trace=tuple(trace),
+        )
+
+    step = 1.0 / (spectral_norm * spectral_norm)
+    completed_iterations = 0
+    convergence_reason = "max_iterations"
+    for iteration in range(1, max_iterations + 1):
+        if cancel_check is not None:
+            cancel_check()
+        residual = weighted_matrix @ weights - weighted_desired
+        gradient = weighted_matrix.conjugate().T @ residual
+        if np.any(~np.isfinite(gradient)):
+            convergence_reason = "non_finite_gradient"
+            break
+
+        trial_step = step
+        candidate = weights
+        candidate_objective = best_objective
+        while trial_step >= 1.0e-14:
+            if cancel_check is not None:
+                cancel_check()
+            trial = _project_complex_bounds(weights - trial_step * gradient, bounds)
+            trial_objective = _objective(
+                weighted_matrix,
+                weighted_desired,
+                trial,
+            )
+            if np.isfinite(trial_objective) and trial_objective <= best_objective:
+                candidate = trial
+                candidate_objective = trial_objective
+                break
+            trial_step *= 0.5
+
+        projected_step = float(np.linalg.norm(candidate - weights))
+        reference_norm = max(1.0, float(np.linalg.norm(weights)))
+        if projected_step <= tolerance * reference_norm:
+            convergence_reason = "projected_step_tolerance"
+            break
+
+        previous_objective = best_objective
+        weights = np.asarray(candidate, dtype=complex)
+        best_objective = candidate_objective
+        step = min(1.0 / (spectral_norm * spectral_norm), trial_step * 1.1)
+        completed_iterations = iteration
+        trace.append(
+            _optimization_trace_point(
+                constraint_matrix,
+                desired_response,
+                weights,
+                restart_index=1,
+                iteration=iteration,
+                objective=best_objective,
+            )
+        )
+        improvement = previous_objective - best_objective
+        if improvement <= tolerance * max(1.0, abs(previous_objective)):
+            convergence_reason = "objective_tolerance"
+            break
+
+    return _OptimizationResult(
+        weights=weights,
+        iterations=completed_iterations,
+        total_iterations=completed_iterations,
+        selected_restart=1,
+        convergence_reason=convergence_reason,
+        final_objective=best_objective,
+        trace=tuple(trace),
+    )
 
 
 def compute_beamforming_weights(
@@ -249,8 +589,12 @@ def compute_beamforming_weights(
     maximum_element_amplitude: float | None = None,
     optimization_mode: str = "amplitude_phase",
     singular_tolerance: float = 1e-6,
+    optimizer_tolerance: float = 1e-8,
+    optimizer_max_iterations: int = 400,
+    optimizer_restart_count: int = 4,
+    cancel_check: Callable[[], None] | None = None,
 ) -> BeamformingWeights:
-    """Solve practical target/null constraints with bounded complex weights."""
+    """Solve practical target/null constraints with cooperative cancellation."""
 
     y_array = np.asarray(y, dtype=float)
     z_array = np.asarray(z, dtype=float)
@@ -261,6 +605,22 @@ def compute_beamforming_weights(
         raise ValueError("Amplitude weights must be finite and non-negative.")
     if singular_tolerance <= 0.0 or not np.isfinite(singular_tolerance):
         raise ValueError("Singular tolerance must be finite and positive.")
+    if optimizer_tolerance <= 0.0 or not np.isfinite(optimizer_tolerance):
+        raise ValueError("Optimizer tolerance must be finite and positive.")
+    if (
+        isinstance(optimizer_max_iterations, bool)
+        or int(optimizer_max_iterations) != optimizer_max_iterations
+        or not 1 <= int(optimizer_max_iterations) <= 10_000
+    ):
+        raise ValueError("Optimizer maximum iterations must be between 1 and 10000.")
+    optimizer_max_iterations = int(optimizer_max_iterations)
+    if (
+        isinstance(optimizer_restart_count, bool)
+        or int(optimizer_restart_count) != optimizer_restart_count
+        or not 1 <= int(optimizer_restart_count) <= 16
+    ):
+        raise ValueError("Optimizer restart count must be between 1 and 16.")
+    optimizer_restart_count = int(optimizer_restart_count)
     if optimization_mode not in {"amplitude_phase", "phase_only"}:
         raise ValueError("Unsupported null optimization mode.")
     if maximum_element_amplitude is not None:
@@ -348,9 +708,16 @@ def compute_beamforming_weights(
     constraint_rank: int | None = None
     condition_number: float | None = None
     optimizer_iterations = 0
+    optimizer_total_iterations = 0
+    optimizer_selected_restart: int | None = None
+    optimizer_convergence_reason = "not_run"
+    optimizer_final_objective: float | None = None
+    optimizer_trace: tuple[OptimizationTracePoint, ...] = ()
     diagnostic_message: str | None = None
 
     if null_directions:
+        if cancel_check is not None:
+            cancel_check()
         control_matrix = constraint_matrix * fixed_amplitudes[None, :]
         try:
             left_vectors, singular_values, right_vectors_h = np.linalg.svd(
@@ -398,13 +765,18 @@ def compute_beamforming_weights(
                     initial_weights = fixed_amplitudes * np.exp(
                         1j * np.angle(unconstrained_weights)
                     )
-                    continuous_flat, optimizer_iterations = _phase_only_optimize(
+                    optimization = _phase_only_optimize(
                         constraint_matrix,
                         desired_response,
                         fixed_amplitudes,
                         initial_weights,
                         required_suppression,
+                        max_iterations=optimizer_max_iterations,
+                        tolerance=optimizer_tolerance,
+                        restart_count=optimizer_restart_count,
+                        cancel_check=cancel_check,
                     )
+                    continuous_flat = optimization.weights
                     solver_method = "phase_only_projected_gradient"
                 else:
                     continuous_flat = np.asarray(
@@ -412,16 +784,37 @@ def compute_beamforming_weights(
                         dtype=complex,
                     )
                     if maximum_element_amplitude is not None:
-                        magnitudes = np.abs(continuous_flat)
-                        bounded_magnitudes = np.minimum(
-                            magnitudes,
+                        amplitude_bounds = np.where(
+                            amplitude_flat > 0.0,
                             maximum_element_amplitude,
+                            0.0,
                         )
-                        continuous_flat = bounded_magnitudes * np.exp(
-                            1j * np.angle(continuous_flat)
+                        optimization = _bounded_complex_optimize(
+                            constraint_matrix,
+                            desired_response,
+                            continuous_flat,
+                            np.asarray(amplitude_bounds, dtype=float),
+                            required_suppression,
+                            max_iterations=optimizer_max_iterations,
+                            tolerance=optimizer_tolerance,
+                            cancel_check=cancel_check,
                         )
-                        continuous_flat[magnitudes == 0.0] = 0.0
-                    solver_method = "svd_minimum_norm"
+                        continuous_flat = optimization.weights
+                        solver_method = "bounded_projected_gradient"
+                    else:
+                        optimization = None
+                        solver_method = "svd_minimum_norm"
+                if optimization_mode == "phase_only" or (
+                    optimization_mode == "amplitude_phase"
+                    and maximum_element_amplitude is not None
+                ):
+                    assert optimization is not None
+                    optimizer_iterations = optimization.iterations
+                    optimizer_total_iterations = optimization.total_iterations
+                    optimizer_selected_restart = optimization.selected_restart
+                    optimizer_convergence_reason = optimization.convergence_reason
+                    optimizer_final_objective = optimization.final_objective
+                    optimizer_trace = optimization.trace
                 null_applied = True
 
     continuous_weights = continuous_flat.reshape(y_array.shape)
@@ -495,6 +888,11 @@ def compute_beamforming_weights(
             f"{unmet_count}/{len(final_requirement_met)} null directions did not "
             "meet the requested suppression after practical constraints."
         )
+    elif null_applied and optimizer_convergence_reason == "max_iterations":
+        diagnostic_message = (
+            "Null optimizer reached the configured iteration limit; inspect the "
+            "convergence trace before accepting the solution."
+        )
 
     return BeamformingWeights(
         weights=np.asarray(final_weights, dtype=complex),
@@ -524,5 +922,15 @@ def compute_beamforming_weights(
         saturated_element_mask=np.asarray(saturated_mask, dtype=bool),
         saturated_element_count=int(np.count_nonzero(saturated_mask)),
         optimizer_iterations=optimizer_iterations,
+        optimizer_total_iterations=optimizer_total_iterations,
+        optimizer_max_iterations=optimizer_max_iterations,
+        optimizer_tolerance=float(optimizer_tolerance),
+        optimizer_restart_count=(
+            optimizer_restart_count if optimization_mode == "phase_only" else 1
+        ),
+        optimizer_selected_restart=optimizer_selected_restart,
+        optimizer_convergence_reason=optimizer_convergence_reason,
+        optimizer_final_objective=optimizer_final_objective,
+        optimizer_trace=optimizer_trace,
         diagnostic_message=diagnostic_message,
     )

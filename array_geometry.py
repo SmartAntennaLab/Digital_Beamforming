@@ -10,7 +10,6 @@ from numpy.typing import ArrayLike, NDArray
 
 from array_math import direction_cosines
 
-
 FloatArray: TypeAlias = NDArray[np.float64]
 BoolArray: TypeAlias = NDArray[np.bool_]
 
@@ -342,12 +341,12 @@ def assess_grating_lobes(
             criterion="No periodically sampled steering axis is present.",
         )
 
-    _, target_u_y, target_u_z = direction_cosines(
+    _, target_u_y_array, target_u_z_array = direction_cosines(
         steering_azimuth_rad,
         steering_elevation_rad,
     )
-    target_u_y = float(target_u_y)
-    target_u_z = float(target_u_z)
+    target_u_y = float(target_u_y_array)
+    target_u_z = float(target_u_z_array)
     y_orders = range(-order_limit, order_limit + 1) if has_y_axis else (0,)
     z_orders = range(-order_limit, order_limit + 1) if has_z_axis else (0,)
     directions: list[GratingLobeDirection] = []
