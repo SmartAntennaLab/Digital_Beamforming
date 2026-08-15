@@ -13,11 +13,11 @@ from beamforming import (
     PatternMetrics,
     array_factor,
     calculate_pattern_metrics,
-    element_pattern_factor,
     great_circle_directions,
     normalize_pattern_db,
     normalize_pattern_linear,
 )
+from element_pattern_data import evaluate_element_pattern
 from model_options import SCAN_MODE_OPTIONS
 
 if TYPE_CHECKING:
@@ -32,6 +32,16 @@ PATTERN_CUT_BASE_SAMPLE_COUNT = 360
 GREAT_CIRCLE_CUT_BASE_SAMPLE_COUNT = 720
 PREVIEW_SURFACE_RESOLUTION = 16
 PREVIEW_SURFACE_LOCAL_SAMPLE_COUNT = 17
+
+
+def _element_pattern(state: SimulationState, azimuth_rad, elevation_rad):
+    return evaluate_element_pattern(
+        state.config.element_option,
+        azimuth_rad,
+        elevation_rad,
+        pattern_grid=state.config.element_pattern_grid,
+        polarization_angle_deg=state.config.polarization_angle_deg,
+    )
 
 
 @dataclass(frozen=True)
@@ -212,8 +222,8 @@ def calculate_pattern_cuts(
         max_chunk_entries=max_chunk_entries,
         cancel_check=cancel_check,
     )
-    azimuth_pattern *= element_pattern_factor(
-        state.config.element_option,
+    azimuth_pattern *= _element_pattern(
+        state,
         azimuth_angles,
         np.full_like(azimuth_angles, target_elevation),
     )
@@ -228,8 +238,8 @@ def calculate_pattern_cuts(
         max_chunk_entries=max_chunk_entries,
         cancel_check=cancel_check,
     )
-    elevation_pattern *= element_pattern_factor(
-        state.config.element_option,
+    elevation_pattern *= _element_pattern(
+        state,
         np.full_like(elevation_angles, target_azimuth),
         elevation_angles,
     )
@@ -332,8 +342,8 @@ def calculate_great_circle_cuts(
         max_chunk_entries=max_chunk_entries,
         cancel_check=cancel_check,
     )
-    horizontal_pattern *= element_pattern_factor(
-        state.config.element_option,
+    horizontal_pattern *= _element_pattern(
+        state,
         horizontal_azimuth,
         horizontal_elevation,
     )
@@ -347,8 +357,8 @@ def calculate_great_circle_cuts(
         max_chunk_entries=max_chunk_entries,
         cancel_check=cancel_check,
     )
-    vertical_pattern *= element_pattern_factor(
-        state.config.element_option,
+    vertical_pattern *= _element_pattern(
+        state,
         vertical_azimuth,
         vertical_elevation,
     )
@@ -548,8 +558,8 @@ def calculate_surface_pattern(
         max_chunk_entries=max_chunk_entries,
         cancel_check=cancel_check,
     )
-    pattern *= element_pattern_factor(
-        state.config.element_option,
+    pattern *= _element_pattern(
+        state,
         azimuth_grid,
         elevation_grid,
     )
@@ -563,8 +573,8 @@ def calculate_surface_pattern(
         max_chunk_entries=max_chunk_entries,
         cancel_check=cancel_check,
     )
-    target_response *= element_pattern_factor(
-        state.config.element_option,
+    target_response *= _element_pattern(
+        state,
         target_azimuth,
         np.radians(state.current_elevation_deg),
     )

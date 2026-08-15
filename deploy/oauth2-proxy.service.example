@@ -1,0 +1,20 @@
+[Unit]
+Description=OIDC authentication proxy for digital beamforming
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=oauth2-proxy
+Group=oauth2-proxy
+ExecStart=/usr/local/bin/oauth2-proxy --config /etc/oauth2-proxy/dbf.cfg
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/oauth2-proxy/dbf.cfg
+
+[Install]
+WantedBy=multi-user.target

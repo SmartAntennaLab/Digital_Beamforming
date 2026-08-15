@@ -1,6 +1,6 @@
 [project]
 name = "digital-beamforming-simulator"
-version = "1.5.0"
+version = "1.7.0"
 description = "Interactive Streamlit simulator for digital beamforming arrays"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -27,6 +27,13 @@ quality = [
     "mypy==2.3.0",
     "ruff==0.16.2",
 ]
+ops = [
+    "opentelemetry-api==1.44.0",
+    "opentelemetry-exporter-otlp-proto-http==1.44.0",
+    "opentelemetry-sdk==1.44.0",
+    "prometheus-client==0.26.0",
+    "redis==8.1.0",
+]
 
 [tool.uv]
 package = false
@@ -50,11 +57,18 @@ files = [
     "array_math.py",
     "beamforming.py",
     "directivity.py",
+    "element_pattern_data.py",
+    "golden_validation.py",
+    "measured_directivity.py",
     "null_solver.py",
     "pattern_metrics.py",
     "pattern_sampling.py",
     "resource_policy.py",
+    "scan_estimation.py",
+    "physical_effects.py",
+    "signal_processing.py",
     "simulation.py",
+    "simulation_effects.py",
 ]
 check_untyped_defs = true
 ignore_missing_imports = true
@@ -72,16 +86,23 @@ omit = [
     "benchmarks/*",
     "tests/*",
     "main.py",
+    "compute_executor.py",
     "compute_governor.py",
+    "compute_tasks.py",
     "device_settings.py",
     "device_storage.py",
     "directivity_controls.py",
+    "distributed_coordination.py",
     "exporters.py",
     "model_options.py",
+    "null_controls.py",
+    "observability.py",
     "scan_controls.py",
     "settings_panel.py",
+    "settings_sections.py",
     "settings_storage.py",
     "simulation_cache.py",
+    "server.py",
     "ui_*.py",
 ]
 

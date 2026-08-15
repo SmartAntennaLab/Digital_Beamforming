@@ -3,10 +3,16 @@ import unittest
 from compute_governor import (
     ComputeBusyError,
     ComputeCancelled,
+    ComputeCoordinationError,
     ComputeDeadlineExceeded,
     ComputeGovernor,
     SessionRateLimitError,
     check_current_computation,
+)
+from distributed_coordination import (
+    CoordinationSnapshot,
+    CoordinationUnavailableError,
+    RateLimitDecision,
 )
 from resource_policy import ResourcePolicy
 
@@ -29,6 +35,46 @@ class FakeProcess:
 
     def memory_info(self) -> FakeMemoryInfo:
         return FakeMemoryInfo()
+
+
+class FakeCoordinator:
+    backend_name = "fake-redis"
+
+    def __init__(self) -> None:
+        self.rate_decision = RateLimitDecision(True)
+        self.slot_allowed = True
+        self.available = True
+        self.identities = []
+        self.released = []
+
+    def consume_session_token(self, identity: str) -> RateLimitDecision:
+        self.identities.append(identity)
+        return self.rate_decision
+
+    def acquire_slot(self, token: str) -> bool:
+        return self.slot_allowed
+
+    def release_slot(self, token: str) -> None:
+        self.released.append(token)
+
+    def snapshot(self) -> CoordinationSnapshot:
+        return CoordinationSnapshot(
+            backend=self.backend_name,
+            available=self.available,
+            global_active_calculations=1,
+            global_max_concurrent_calculations=4,
+        )
+
+    def ping(self) -> bool:
+        return self.available
+
+
+class BrokenCoordinator(FakeCoordinator):
+    def consume_session_token(self, identity: str) -> RateLimitDecision:
+        raise CoordinationUnavailableError("redis unavailable")
+
+    def ping(self) -> bool:
+        return False
 
 
 def policy(**overrides) -> ResourcePolicy:
@@ -123,6 +169,57 @@ class ComputeGovernorTests(unittest.TestCase):
         self.assertEqual(snapshot.process_rss_bytes, 256 * 1024**2)
         self.assertGreaterEqual(snapshot.system_cpu_percent, 0.0)
         self.assertGreaterEqual(snapshot.system_memory_percent, 0.0)
+
+    def test_shared_coordinator_limits_identity_and_global_slots(self):
+        coordinator = FakeCoordinator()
+        governor = ComputeGovernor(
+            policy(),
+            process=FakeProcess(),
+            coordinator=coordinator,
+        )
+
+        with governor.lease(
+            "browser-session",
+            "pattern:UPA",
+            rate_limit_identity="oidc:user@example.com",
+        ):
+            pass
+
+        self.assertEqual(coordinator.identities, ["oidc:user@example.com"])
+        self.assertEqual(len(coordinator.released), 1)
+        snapshot = governor.snapshot()
+        self.assertEqual(snapshot.coordination_backend, "fake-redis")
+        self.assertEqual(snapshot.global_active_calculations, 1)
+        self.assertEqual(snapshot.global_max_concurrent_calculations, 4)
+
+        coordinator.slot_allowed = False
+        with self.assertRaises(ComputeBusyError):
+            with governor.lease("other", "metrics:UPA"):
+                pass
+
+    def test_shared_rate_limit_and_fail_closed_outage_are_rejected(self):
+        coordinator = FakeCoordinator()
+        coordinator.rate_decision = RateLimitDecision(False, 2.5)
+        governor = ComputeGovernor(
+            policy(),
+            process=FakeProcess(),
+            coordinator=coordinator,
+        )
+        with self.assertRaises(SessionRateLimitError) as raised:
+            with governor.lease("session", "pattern:UPA"):
+                pass
+        self.assertAlmostEqual(raised.exception.retry_after_seconds, 2.5)
+
+        unavailable = ComputeGovernor(
+            policy(),
+            process=FakeProcess(),
+            coordinator=BrokenCoordinator(),
+            distributed_fail_closed=True,
+        )
+        with self.assertRaises(ComputeCoordinationError):
+            with unavailable.lease("session", "pattern:UPA"):
+                pass
+        self.assertFalse(unavailable.ready())
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from beamforming import ConstraintDiagnostics, get_steering_limits
+from beamforming import ConstraintDiagnostics, PatternMetrics, get_steering_limits
 from simulation import SimulationState
 
 
@@ -55,7 +55,7 @@ def format_sidelobe_metric(
     return f"{level_db:.2f} dB (@ {angle_deg:.1f}°)"
 
 
-def format_pattern_metric_summary(metrics: object) -> str:
+def format_pattern_metric_summary(metrics: PatternMetrics) -> str:
     return " / ".join(
         (
             format_angle_metric(metrics.hpbw_deg),

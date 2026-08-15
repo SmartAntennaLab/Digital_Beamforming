@@ -1,4 +1,7 @@
+import io
+import json
 import unittest
+import zipfile
 
 from exporters import build_design_report, build_export_artifacts
 from simulation import (
@@ -29,6 +32,23 @@ class ExporterTests(unittest.TestCase):
             great_circle_cuts=great_circle_cuts,
             directivity=directivity,
         )
+
+        settings = json.loads(artifacts.settings_json)
+        self.assertEqual(settings["app_version"], "1.7.0")
+        self.assertEqual(settings["random_seed"], 42)
+        with zipfile.ZipFile(io.BytesIO(artifacts.reproducibility_zip)) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {
+                    "beam_pattern_data.csv",
+                    "beamforming_design_report.md",
+                    "simulation_settings.json",
+                    "manifest.json",
+                },
+            )
+            manifest = json.loads(archive.read("manifest.json"))
+        self.assertIn("git_commit", manifest)
+        self.assertIn("directivity_is_approximate", manifest["calculation"])
 
         csv_text = artifacts.pattern_csv.decode("utf-8")
         report = artifacts.design_report.decode("utf-8")

@@ -6,7 +6,9 @@ from dataclasses import replace
 
 import streamlit as st
 
+from compute_executor import ComputeExecutor
 from compute_governor import check_current_computation
+from compute_tasks import ViewComputeRequest, ViewComputeResult
 from directivity import DIRECTIVITY_SCHEMA_VERSION, DirectivityResult
 from interferer_sampling import (
     INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION,
@@ -33,6 +35,28 @@ from simulation import (
     build_simulation_state,
     calculate_state_directivity,
 )
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def cached_view_result(
+    request: ViewComputeRequest,
+    *,
+    _executor: ComputeExecutor,
+    _session_id: str,
+    _timeout_seconds: float,
+    _cancel_check,
+) -> ViewComputeResult:
+    """Cache one complete view while allowing inline or Process Pool execution."""
+
+    check_current_computation()
+    result = _executor.execute(
+        request,
+        session_id=_session_id,
+        timeout_seconds=_timeout_seconds,
+        cancel_check=_cancel_check,
+    )
+    check_current_computation()
+    return result
 
 
 @st.cache_data(max_entries=32, show_spinner=False)

@@ -8,12 +8,18 @@ import math
 import os
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
 import psutil
 
+from distributed_coordination import (
+    CoordinationUnavailableError,
+    GlobalComputeCoordinator,
+    create_redis_coordinator_from_environment,
+)
 from resource_policy import ResourcePolicy
 
 LOGGER = logging.getLogger("digital_beamforming.compute")
@@ -34,6 +40,10 @@ class ComputeGovernorError(RuntimeError):
 
 class ComputeBusyError(ComputeGovernorError):
     """Raised when every process-wide calculation slot remains occupied."""
+
+
+class ComputeCoordinationError(ComputeBusyError):
+    """Raised when fail-closed distributed coordination is unavailable."""
 
 
 class SessionRateLimitError(ComputeGovernorError):
@@ -78,6 +88,10 @@ class ComputeSnapshot:
     system_cpu_percent: float
     process_rss_bytes: int
     system_memory_percent: float
+    coordination_backend: str = "local"
+    global_coordination_available: bool = True
+    global_active_calculations: int = 0
+    global_max_concurrent_calculations: int = 0
 
 
 @dataclass
@@ -95,18 +109,21 @@ class ComputeLease:
         governor: ComputeGovernor,
         session_id: str,
         task_label: str,
+        rate_limit_identity: str,
     ) -> None:
         self._governor = governor
         self.session_id = session_id
         self.task_label = task_label
+        self.rate_limit_identity = rate_limit_identity
         self.started_at = 0.0
         self.deadline = 0.0
         self.generation = 0
         self._previous_lease: ComputeLease | None = None
         self._admitted = False
+        self._global_slot_token: str | None = None
 
     def __enter__(self) -> ComputeLease:
-        self._governor._consume_session_token(self.session_id)
+        self._governor._consume_session_token(self.rate_limit_identity)
         with self._governor._lock:
             self._governor._queued += 1
         acquired = False
@@ -121,6 +138,27 @@ class ComputeLease:
             with self._governor._lock:
                 self._governor._busy_rejections += 1
             raise ComputeBusyError("Server calculation slots are busy; retry shortly.")
+
+        if self._governor._coordinator is not None:
+            global_token = uuid.uuid4().hex
+            try:
+                global_acquired = self._governor._coordinator.acquire_slot(global_token)
+            except CoordinationUnavailableError as error:
+                if self._governor._distributed_fail_closed:
+                    self._governor._semaphore.release()
+                    with self._governor._lock:
+                        self._governor._busy_rejections += 1
+                    raise ComputeCoordinationError(str(error)) from error
+                global_acquired = True
+                global_token = ""
+            if not global_acquired:
+                self._governor._semaphore.release()
+                with self._governor._lock:
+                    self._governor._busy_rejections += 1
+                raise ComputeBusyError(
+                    "Global calculation slots are busy; retry shortly."
+                )
+            self._global_slot_token = global_token or None
 
         self._admitted = True
         self.started_at = self._governor._clock()
@@ -162,6 +200,16 @@ class ComputeLease:
 
         _CURRENT_LEASE.value = self._previous_lease
         if self._admitted:
+            if (
+                self._global_slot_token is not None
+                and self._governor._coordinator is not None
+            ):
+                try:
+                    self._governor._coordinator.release_slot(
+                        self._global_slot_token
+                    )
+                except CoordinationUnavailableError:
+                    LOGGER.exception("Failed to release a Redis compute slot.")
             self._governor._semaphore.release()
             duration = max(0.0, self._governor._clock() - self.started_at)
             effective_error = generated_error or exc_value
@@ -190,6 +238,8 @@ class ComputeGovernor:
         *,
         clock: Callable[[], float] = time.monotonic,
         process: _ProcessLike | None = None,
+        coordinator: GlobalComputeCoordinator | None = None,
+        distributed_fail_closed: bool = True,
     ) -> None:
         if policy.max_concurrent_calculations < 1:
             raise ValueError("Concurrent calculation limit must be positive.")
@@ -208,6 +258,8 @@ class ComputeGovernor:
         self.policy = policy
         self._clock = clock
         self._process = process or psutil.Process(os.getpid())
+        self._coordinator = coordinator
+        self._distributed_fail_closed = distributed_fail_closed
         self._semaphore = threading.BoundedSemaphore(policy.max_concurrent_calculations)
         self._lock = threading.RLock()
         self._monitor_lock = threading.Lock()
@@ -229,10 +281,21 @@ class ComputeGovernor:
         except (psutil.Error, OSError):
             pass
 
-    def lease(self, session_id: str, task_label: str) -> ComputeLease:
+    def lease(
+        self,
+        session_id: str,
+        task_label: str,
+        *,
+        rate_limit_identity: str | None = None,
+    ) -> ComputeLease:
         if not session_id:
             raise ValueError("A non-empty session ID is required.")
-        return ComputeLease(self, session_id, task_label)
+        return ComputeLease(
+            self,
+            session_id,
+            task_label,
+            rate_limit_identity or session_id,
+        )
 
     def cancel_session(self, session_id: str) -> None:
         """Invalidate every lease already running for one browser session."""
@@ -244,7 +307,36 @@ class ComputeGovernor:
                 self._session_generations.get(session_id, 0) + 1
             )
 
+    def ready(self) -> bool:
+        """Return whether this process may safely admit production work."""
+
+        if self._coordinator is None:
+            return True
+        try:
+            available = (
+                self._coordinator.ping()
+                and self._coordinator.snapshot().available
+            )
+        except Exception:
+            available = False
+        return available or not self._distributed_fail_closed
+
     def _consume_session_token(self, session_id: str) -> None:
+        if self._coordinator is not None:
+            try:
+                decision = self._coordinator.consume_session_token(session_id)
+            except CoordinationUnavailableError as error:
+                if self._distributed_fail_closed:
+                    with self._lock:
+                        self._rate_rejections += 1
+                    raise ComputeCoordinationError(str(error)) from error
+            else:
+                if not decision.allowed:
+                    with self._lock:
+                        self._rate_rejections += 1
+                    raise SessionRateLimitError(decision.retry_after_seconds)
+                return
+
         now = self._clock()
         refill_rate = self.policy.session_calculations_per_minute / 60.0
         capacity = float(self.policy.session_burst)
@@ -297,6 +389,17 @@ class ComputeGovernor:
                 rss_bytes = 0
                 system_cpu = 0.0
                 system_memory = 0.0
+        if self._coordinator is None:
+            coordination_backend = "local"
+            coordination_available = True
+            global_active = active
+            global_maximum = self.policy.max_concurrent_calculations
+        else:
+            coordination = self._coordinator.snapshot()
+            coordination_backend = coordination.backend
+            coordination_available = coordination.available
+            global_active = coordination.global_active_calculations
+            global_maximum = coordination.global_max_concurrent_calculations
         return ComputeSnapshot(
             active_calculations=active,
             queued_calculations=queued,
@@ -311,6 +414,10 @@ class ComputeGovernor:
             system_cpu_percent=system_cpu,
             process_rss_bytes=rss_bytes,
             system_memory_percent=system_memory,
+            coordination_backend=coordination_backend,
+            global_coordination_available=coordination_available,
+            global_active_calculations=global_active,
+            global_max_concurrent_calculations=global_maximum,
         )
 
     def log_health_if_due(self) -> ComputeSnapshot:
@@ -350,6 +457,12 @@ def get_compute_governor(policy: ResourcePolicy) -> ComputeGovernor:
     with _GOVERNORS_LOCK:
         governor = _GOVERNORS.get(policy)
         if governor is None:
-            governor = ComputeGovernor(policy)
+            coordinator = create_redis_coordinator_from_environment(policy)
+            fail_closed = os.getenv("DBF_REDIS_FAIL_CLOSED", "true").strip().lower()
+            governor = ComputeGovernor(
+                policy,
+                coordinator=coordinator,
+                distributed_fail_closed=fail_closed not in {"0", "false", "no"},
+            )
             _GOVERNORS[policy] = governor
         return governor

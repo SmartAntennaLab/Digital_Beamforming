@@ -21,6 +21,8 @@ from beamforming import (
     create_failure_mask,
 )
 from directivity import DirectivityResult, calculate_directivity
+from element_pattern_data import ElementPatternGrid
+from golden_validation import GoldenDataset
 from interferer_sampling import (
     INTERFERER_GREAT_CIRCLE_BASE_SAMPLE_COUNT,
     INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION,
@@ -30,7 +32,7 @@ from interferer_sampling import (
     calculate_interferer_great_circle_cuts,
     calculate_interferer_response_comparisons,
 )
-from model_options import SCAN_MODE_OPTIONS
+from measured_directivity import calculate_measured_pattern_directivity
 from pattern_sampling import (
     GREAT_CIRCLE_CUT_BASE_SAMPLE_COUNT,
     GREAT_CIRCLE_CUT_SCHEMA_VERSION,
@@ -51,13 +53,18 @@ from pattern_sampling import (
     surface_local_sample_count,
     surface_resolution,
 )
+from physical_effects import HardwareEffectDiagnostics
+from scan_estimation import ScanTimingEstimate, estimate_scan_timing, scan_direction
+from simulation_effects import (
+    realize_hardware,
+    realized_null_depths,
+    validate_advanced_config,
+)
 
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
 BoolArray = NDArray[np.bool_]
 LIGHT_SPEED_M_S = 299_792_458.0
-SCAN_REFERENCE_ELEMENT_COUNT = 4096
-SCAN_REFERENCE_FULL_FRAME_SECONDS = 0.85
 
 
 @dataclass(frozen=True)
@@ -88,6 +95,27 @@ class SimulationConfig:
     null_optimizer_tolerance: float = 1e-8
     null_optimizer_max_iterations: int = 400
     null_optimizer_restart_count: int = 4
+    random_seed: int = 42
+    position_error_rms_wavelength: float = 0.0
+    amplitude_error_rms_db: float = 0.0
+    phase_error_rms_deg: float = 0.0
+    mutual_coupling_db: float | None = None
+    mutual_coupling_phase_deg: float = 0.0
+    polarization_angle_deg: float = 0.0
+    element_pattern_grid: ElementPatternGrid | None = None
+    wideband_bandwidth_percent: float = 0.0
+    wideband_frequency_samples: int = 7
+    near_field_focus_range_m: float | None = None
+    enable_channel_analysis: bool = False
+    channel_snapshots: int = 128
+    multipath_count: int = 0
+    signal_power_dbm: float = 0.0
+    interference_power_dbm: float = -10.0
+    noise_power_dbm: float = -30.0
+    adaptive_beamforming_method: str = "none"
+    diagonal_loading: float = 1e-3
+    enable_doa_estimation: bool = False
+    golden_dataset: GoldenDataset | None = None
 
 
 @dataclass(frozen=True)
@@ -100,12 +128,15 @@ class SimulationState:
     wavelength_m: float
     horizontal_spacing_m: float
     vertical_spacing_m: float
+    nominal_coordinates: ArrayCoordinates
     coordinates: ArrayCoordinates
     base_amplitudes: FloatArray
     active_mask: BoolArray
     weight_result: BeamformingWeights
     complex_weights: ComplexArray
     actual_amplitudes: FloatArray
+    hardware_diagnostics: HardwareEffectDiagnostics
+    realized_null_depths_db: tuple[float | None, ...]
     gain_metrics: ArrayGainMetrics
     grating_assessment: GratingLobeAssessment
 
@@ -127,17 +158,6 @@ class ArrayLayoutSummary:
     failed_elements: int
     requested_failure_rate_percent: float
     actual_failure_rate_percent: float
-
-
-@dataclass(frozen=True)
-class ScanTimingEstimate:
-    """Empirical scan time estimate calibrated at a 64×64 array."""
-
-    frame_seconds: float
-    effective_interval_seconds: float
-    finalization_seconds: float
-    total_seconds: float
-    frame_count: int
 
 
 def build_simulation_state(
@@ -174,29 +194,31 @@ def build_simulation_state(
     )
     if not np.isfinite(azimuth_deg) or not np.isfinite(elevation_deg):
         raise ValueError("Steering angles must be finite.")
+    validate_advanced_config(config)
 
     wavelength_m = LIGHT_SPEED_M_S / (config.frequency_ghz * 1.0e9)
     horizontal_spacing_m = config.horizontal_spacing_wavelength * wavelength_m
     vertical_spacing_m = config.vertical_spacing_wavelength * wavelength_m
-    coordinates = create_array_coordinates(
+    nominal_coordinates = create_array_coordinates(
         config.vertical_count,
         config.horizontal_count,
         horizontal_spacing_m,
         config.geometry,
         vertical_spacing_m=vertical_spacing_m,
     )
-    if coordinates.geometry == "UHA":
+    if nominal_coordinates.geometry == "UHA":
         vertical_spacing_m = horizontal_spacing_m * np.sin(np.pi / 3.0)
 
     active_mask = create_failure_mask(
-        coordinates.rows,
-        coordinates.columns,
+        nominal_coordinates.rows,
+        nominal_coordinates.columns,
         config.failure_rate_percent,
-        seed=42,
-        element_mask=coordinates.element_mask,
+        seed=config.random_seed,
+        element_mask=nominal_coordinates.element_mask,
     )
-    base_amplitudes = create_array_taper(coordinates, config.taper_option) * active_mask
-
+    base_amplitudes = (
+        create_array_taper(nominal_coordinates, config.taper_option) * active_mask
+    )
     azimuth_rad = np.radians(azimuth_deg)
     elevation_rad = np.radians(elevation_deg)
     null_specs: tuple[tuple[float, float, float], ...] = ()
@@ -212,8 +234,8 @@ def build_simulation_state(
         float(suppression) for _, _, suppression in null_specs
     )
     weight_result = compute_beamforming_weights(
-        coordinates.y,
-        coordinates.z,
+        nominal_coordinates.y,
+        nominal_coordinates.z,
         wavelength_m,
         azimuth_rad,
         elevation_rad,
@@ -230,7 +252,19 @@ def build_simulation_state(
         optimizer_restart_count=config.null_optimizer_restart_count,
         cancel_check=cancel_check,
     )
-    complex_weights = weight_result.weights
+    coordinates, complex_weights, hardware_diagnostics = realize_hardware(
+        config,
+        nominal_coordinates,
+        weight_result,
+        base_amplitudes,
+        active_mask,
+        wavelength_m=wavelength_m,
+        horizontal_spacing_m=horizontal_spacing_m,
+        vertical_spacing_m=vertical_spacing_m,
+        azimuth_rad=azimuth_rad,
+        elevation_rad=elevation_rad,
+        cancel_check=cancel_check,
+    )
     gain_metrics = calculate_array_gain_metrics(
         coordinates.y,
         coordinates.z,
@@ -241,13 +275,21 @@ def build_simulation_state(
         elevation_rad,
         element_mask=coordinates.element_mask,
     )
+    post_impairment_null_depths = realized_null_depths(
+        config,
+        coordinates,
+        complex_weights,
+        wavelength_m,
+        (azimuth_rad, elevation_rad),
+        weight_result.null_directions_rad,
+    )
     grating_assessment = assess_grating_lobes(
         config.geometry,
         config.horizontal_spacing_wavelength,
         azimuth_rad,
         elevation_rad,
-        vertical_count=coordinates.rows,
-        horizontal_count=coordinates.columns,
+        vertical_count=nominal_coordinates.rows,
+        horizontal_count=nominal_coordinates.columns,
         vertical_spacing_over_wavelength=(
             config.horizontal_spacing_wavelength * np.sin(np.pi / 3.0)
             if coordinates.geometry == "UHA"
@@ -262,12 +304,15 @@ def build_simulation_state(
         wavelength_m=wavelength_m,
         horizontal_spacing_m=horizontal_spacing_m,
         vertical_spacing_m=vertical_spacing_m,
+        nominal_coordinates=nominal_coordinates,
         coordinates=coordinates,
         base_amplitudes=np.asarray(base_amplitudes, dtype=float),
         active_mask=np.asarray(active_mask, dtype=bool),
         weight_result=weight_result,
         complex_weights=np.asarray(complex_weights, dtype=complex),
         actual_amplitudes=np.asarray(np.abs(complex_weights), dtype=float),
+        hardware_diagnostics=hardware_diagnostics,
+        realized_null_depths_db=post_impairment_null_depths,
         gain_metrics=gain_metrics,
         grating_assessment=grating_assessment,
     )
@@ -323,6 +368,12 @@ def calculate_state_directivity(
 ) -> DirectivityResult:
     """Calculate target-direction directivity for one completed state."""
 
+    if state.config.element_pattern_grid is not None:
+        return calculate_measured_pattern_directivity(
+            state,
+            max_chunk_entries=max_chunk_entries,
+            cancel_check=cancel_check,
+        )
     return calculate_directivity(
         state.coordinates.y,
         state.coordinates.z,
@@ -338,134 +389,3 @@ def calculate_state_directivity(
         exact_max_elements=state.config.directivity_exact_max_elements,
         cancel_check=cancel_check,
     )
-
-
-def _scan_render_work_units(element_count: int, scan_mode: str) -> int:
-    """Approximate array-factor entries rendered by the pattern tab."""
-
-    sampling = scan_surface_sampling(element_count, scan_mode, scanning=True)
-    coordinate_cut_points = 2 * (
-        PATTERN_CUT_BASE_SAMPLE_COUNT + pattern_cut_local_sample_count(element_count)
-    )
-    great_circle_cut_points = 2 * (
-        GREAT_CIRCLE_CUT_BASE_SAMPLE_COUNT
-        + pattern_cut_local_sample_count(element_count)
-    )
-    surface_points = 0
-    if sampling.render_3d:
-        surface_points = int(sampling.resolution or 0) + int(
-            sampling.local_sample_count or 0
-        )
-        surface_points **= 2
-    return element_count * (
-        coordinate_cut_points + great_circle_cut_points + surface_points
-    )
-
-
-def estimate_scan_timing(
-    element_count: int,
-    frame_count: int,
-    scan_mode: str,
-    frame_interval_seconds: float,
-    *,
-    session_calculations_per_minute: int | None = None,
-    session_burst: int = 1,
-) -> ScanTimingEstimate:
-    """Estimate scan duration from relative array-factor work.
-
-    The model is intentionally presented as an estimate: it anchors a full
-    64×64 pattern-tab frame at 0.85 seconds and scales by element/sample work.
-    The requested fragment interval cannot make a slower calculation faster.
-    """
-
-    if element_count < 1:
-        raise ValueError("Element count must be positive.")
-    if frame_count < 1:
-        raise ValueError("Frame count must be positive.")
-    if not np.isfinite(frame_interval_seconds) or frame_interval_seconds < 0.0:
-        raise ValueError("Frame interval must be finite and non-negative.")
-    if scan_mode not in SCAN_MODE_OPTIONS:
-        raise ValueError("Unsupported scan mode.")
-    if (
-        session_calculations_per_minute is not None
-        and session_calculations_per_minute < 1
-    ):
-        raise ValueError("Session calculation rate must be positive.")
-    if session_burst < 1:
-        raise ValueError("Session burst must be positive.")
-
-    reference_work = _scan_render_work_units(
-        SCAN_REFERENCE_ELEMENT_COUNT,
-        "full_3d",
-    )
-    mode_work = _scan_render_work_units(element_count, scan_mode)
-    frame_seconds = max(
-        0.02,
-        SCAN_REFERENCE_FULL_FRAME_SECONDS * mode_work / reference_work,
-    )
-    effective_interval = max(frame_seconds, frame_interval_seconds)
-
-    finalization_seconds = 0.0
-    if scan_mode != "full_3d":
-        full_work = _scan_render_work_units(element_count, "full_3d")
-        finalization_seconds = max(
-            0.02,
-            SCAN_REFERENCE_FULL_FRAME_SECONDS * full_work / reference_work,
-        )
-
-    total_seconds = frame_count * effective_interval
-    if session_calculations_per_minute is not None:
-        refill_rate = session_calculations_per_minute / 60.0
-        capacity = float(min(session_burst, session_calculations_per_minute))
-        tokens = capacity
-        elapsed_seconds = 0.0
-        updated_at = 0.0
-        for _ in range(frame_count):
-            refill_elapsed = elapsed_seconds - updated_at
-            tokens = min(capacity, tokens + refill_elapsed * refill_rate)
-            updated_at = elapsed_seconds
-            if tokens < 1.0:
-                wait_seconds = (1.0 - tokens) / refill_rate
-                elapsed_seconds += wait_seconds
-                tokens = 1.0
-                updated_at = elapsed_seconds
-            tokens -= 1.0
-            elapsed_seconds += effective_interval
-        total_seconds = elapsed_seconds
-
-    return ScanTimingEstimate(
-        frame_seconds=float(frame_seconds),
-        effective_interval_seconds=float(effective_interval),
-        finalization_seconds=float(finalization_seconds),
-        total_seconds=float(total_seconds + finalization_seconds),
-        frame_count=frame_count,
-    )
-
-
-def scan_direction(
-    index: int,
-    azimuth_range_deg: tuple[float, float],
-    elevation_range_deg: tuple[float, float],
-    azimuth_steps: int,
-    elevation_steps: int,
-) -> tuple[float, float, int]:
-    """Resolve one raster-scan index into azimuth/elevation and total count."""
-
-    if azimuth_steps < 1 or elevation_steps < 1:
-        raise ValueError("Scan step counts must be positive.")
-    total_steps = azimuth_steps * elevation_steps
-    if not 0 <= index < total_steps:
-        raise ValueError("Scan index is outside the configured raster.")
-
-    elevation_index, azimuth_index = divmod(index, azimuth_steps)
-    azimuth_fraction = azimuth_index / (azimuth_steps - 1) if azimuth_steps > 1 else 0.0
-    elevation_fraction = (
-        elevation_index / (elevation_steps - 1) if elevation_steps > 1 else 0.0
-    )
-    azimuth_deg = azimuth_range_deg[0] + azimuth_fraction * (
-        azimuth_range_deg[1] - azimuth_range_deg[0]
-    )
-    elevation_deg = elevation_range_deg[0] + elevation_fraction * (
-        elevation_range_deg[1] - elevation_range_deg[0]
-    )
-    return float(azimuth_deg), float(elevation_deg), total_steps

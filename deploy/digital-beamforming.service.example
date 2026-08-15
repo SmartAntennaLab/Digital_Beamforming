@@ -1,6 +1,6 @@
 [Unit]
-Description=Digital beamforming Streamlit application
-After=network-online.target
+Description=Digital beamforming Streamlit application replica
+After=network-online.target redis.service oauth2-proxy.service
 Wants=network-online.target
 
 [Service]
@@ -9,9 +9,13 @@ User=digital-beamforming
 Group=digital-beamforming
 WorkingDirectory=/opt/digital-beamforming
 EnvironmentFile=-/etc/digital-beamforming.env
-ExecStart=/opt/digital-beamforming/.venv/bin/streamlit run main.py --server.headless=true --server.address=127.0.0.1 --server.port=8501
+Environment=DBF_COMPUTE_BACKEND=process
+Environment=DBF_REQUIRE_PROXY_IDENTITY=true
+ExecStart=/opt/digital-beamforming/.venv/bin/python server.py
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

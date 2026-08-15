@@ -16,7 +16,7 @@
       ]
     }
   },
-  "postCreateCommand": "python -m pip install uv==0.11.29 && uv sync --frozen --extra dev && uv run --frozen --no-sync python -m pip check",
+  "postCreateCommand": "python -m pip install uv==0.12.3 && uv sync --frozen --extra dev && uv run --frozen --no-sync python -m pip check",
   "postAttachCommand": {
     "server": "uv run --frozen --no-sync streamlit run main.py --server.headless=true"
   },

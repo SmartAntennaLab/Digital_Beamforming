@@ -6,7 +6,28 @@ from collections.abc import Mapping
 
 import streamlit as st
 
+DRAFT_NULL_ENABLED_KEY = "_draft_enable_null"
 DRAFT_NULL_COUNT_KEY = "_draft_null_count"
+
+
+def render_null_activation_control() -> bool:
+    """Render an immediate switch that controls Null input visibility."""
+
+    st.session_state.setdefault(
+        DRAFT_NULL_ENABLED_KEY,
+        bool(st.session_state.get("enable_null", False)),
+    )
+    return bool(
+        st.toggle(
+            "영점 조향 활성화",
+            key=DRAFT_NULL_ENABLED_KEY,
+            help=(
+                "켜면 간섭원 방향과 억압량 입력이 표시됩니다. 변경한 상태는 "
+                "'설정 적용 및 계산'을 누를 때 결과에 반영됩니다."
+            ),
+            persist_state="session",
+        )
+    )
 
 
 def render_null_count_control() -> int:
@@ -17,7 +38,7 @@ def render_null_count_control() -> int:
         int(st.session_state.get("null_count", 1)),
     )
     return int(
-        st.sidebar.number_input(
+        st.number_input(
             "간섭원 수",
             min_value=1,
             max_value=8,
@@ -38,6 +59,17 @@ def apply_draft_null_count() -> None:
         st.session_state.get(
             DRAFT_NULL_COUNT_KEY,
             st.session_state.get("null_count", 1),
+        )
+    )
+
+
+def apply_draft_null_activation() -> None:
+    """Promote the visibility switch to the applied simulation setting."""
+
+    st.session_state["enable_null"] = bool(
+        st.session_state.get(
+            DRAFT_NULL_ENABLED_KEY,
+            st.session_state.get("enable_null", False),
         )
     )
 
@@ -67,8 +99,11 @@ def applied_null_constraints(
 
 
 __all__ = [
+    "DRAFT_NULL_ENABLED_KEY",
     "DRAFT_NULL_COUNT_KEY",
     "applied_null_constraints",
+    "apply_draft_null_activation",
     "apply_draft_null_count",
+    "render_null_activation_control",
     "render_null_count_control",
 ]

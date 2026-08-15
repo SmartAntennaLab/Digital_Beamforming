@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import io
+import json
+import zipfile
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -15,6 +20,7 @@ from model_options import (
     option_label,
 )
 from pattern_sampling import GreatCircleCuts, PatternCuts
+from provenance import APP_VERSION, git_commit
 from simulation import SimulationState, summarize_array_layout
 from ui_formatters import (
     array_size_text,
@@ -35,6 +41,70 @@ from ui_formatters import (
 class ExportArtifacts:
     pattern_csv: bytes
     design_report: bytes
+    settings_json: bytes
+    reproducibility_zip: bytes
+
+
+def _build_reproducibility_files(
+    state: SimulationState,
+    pattern_csv: bytes,
+    design_report: bytes,
+    directivity: DirectivityResult | None,
+) -> tuple[bytes, bytes]:
+    settings_document = {
+        "schema_version": 1,
+        "app_version": APP_VERSION,
+        "git_commit": git_commit(),
+        "random_seed": state.config.random_seed,
+        "simulation_config": asdict(state.config),
+    }
+    settings_json = json.dumps(
+        settings_document,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    files = {
+        "beam_pattern_data.csv": pattern_csv,
+        "beamforming_design_report.md": design_report,
+        "simulation_settings.json": settings_json,
+    }
+    manifest = {
+        "schema_version": 1,
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "app_version": APP_VERSION,
+        "git_commit": settings_document["git_commit"],
+        "random_seed": state.config.random_seed,
+        "calculation": {
+            "directivity_requested_mode": state.config.directivity_mode,
+            "directivity_effective_mode": (
+                directivity.effective_mode if directivity is not None else None
+            ),
+            "directivity_is_approximate": (
+                directivity.is_approximate if directivity is not None else None
+            ),
+            "directivity_method": (
+                directivity.integration_method if directivity is not None else None
+            ),
+            "wideband_model": "fixed_phase_shifter_far_field",
+            "near_field_model": "scalar_spherical_wave",
+            "channel_model": "deterministic_seeded_complex_gaussian",
+        },
+        "files": {
+            name: {"sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+            for name, payload in files.items()
+        },
+    }
+    manifest_json = json.dumps(
+        manifest, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False
+    ).encode("utf-8")
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in files.items():
+            archive.writestr(name, payload)
+        archive.writestr("manifest.json", manifest_json)
+    return settings_json, archive_buffer.getvalue()
 
 
 def build_pattern_export_frame(
@@ -140,7 +210,7 @@ def build_design_report(
         else "∞"
     )
     actual_null_depth = (
-        weight_result.null_depths_db[0] if weight_result.null_depths_db else None
+        state.realized_null_depths_db[0] if state.realized_null_depths_db else None
     )
     amplitude_limit_text = (
         f"{weight_result.maximum_element_amplitude:.6g}"
@@ -149,6 +219,29 @@ def build_design_report(
     )
     met_null_count = sum(
         status is True for status in weight_result.null_requirement_met
+    )
+    hardware = state.hardware_diagnostics
+    coupling_text = (
+        "사용 안 함"
+        if hardware.mutual_coupling_db is None
+        else (
+            f"{hardware.mutual_coupling_db:.1f} dB / "
+            f"{hardware.mutual_coupling_phase_deg:.1f}° / "
+            f"{hardware.coupled_neighbor_links:,} links"
+        )
+    )
+    pattern_source = (
+        "내장 패턴"
+        if state.config.element_pattern_grid is None
+        else (
+            f"{state.config.element_pattern_grid.name} "
+            f"(SHA-256 {state.config.element_pattern_grid.source_sha256})"
+        )
+    )
+    focus_text = (
+        "사용 안 함"
+        if state.config.near_field_focus_range_m is None
+        else f"{state.config.near_field_focus_range_m:.6g} m"
     )
 
     if state.config.enable_null_steering:
@@ -280,6 +373,16 @@ def build_design_report(
 - 위상 해상도: {option_label(state.config.phase_bits, PHASE_BIT_LABELS)}
 - 요청 결함률: {layout.requested_failure_rate_percent:.2f}%
 - 실제 결함률: {layout.actual_failure_rate_percent:.2f}% ({layout.failed_elements} / {layout.total_elements}개)
+- 난수 시드: {state.config.random_seed}
+- 위치 오차 RMS 요청 / 실현: {hardware.position_error_rms_wavelength:.6g} λ / {hardware.realized_position_error_rms_wavelength:.6g} λ
+- 진폭 보정 오차 RMS 요청 / 실현: {hardware.amplitude_error_rms_db:.6g} dB / {hardware.realized_amplitude_error_rms_db:.6g} dB
+- 위상 보정 오차 RMS 요청 / 실현: {hardware.phase_error_rms_deg:.6g}° / {hardware.realized_phase_error_rms_deg:.6g}°
+- 상호 결합: {coupling_text}
+- 편파 회전각: {state.config.polarization_angle_deg:.3f}°
+- 소자 패턴 소스: {pattern_source}
+- Wideband 대역폭 / 표본: {state.config.wideband_bandwidth_percent:.3f}% / {state.config.wideband_frequency_samples}
+- Near-field 초점: {focus_text}
+- 채널 / 적응 빔포밍 / MUSIC DOA: {state.config.enable_channel_analysis} / {state.config.adaptive_beamforming_method.upper()} / {state.config.enable_doa_estimation}
 
 ## 성능 지표
 
@@ -294,7 +397,7 @@ def build_design_report(
 - 좌표각 Azimuth HPBW / FNBW / SLL: {format_pattern_metric_summary(cuts.azimuth_metrics)}
 - 좌표각 Elevation HPBW / FNBW / SLL: {format_pattern_metric_summary(cuts.elevation_metrics)}
 {great_circle_report}
-- 실제 Null 깊이: {format_depth(actual_null_depth) if state.config.enable_null_steering else 'N/A'}
+- 실제 Null 깊이: {format_depth(actual_null_depth) if state.config.enable_null_steering else "N/A"}
 
 ## Null 제약 진단
 
@@ -310,12 +413,19 @@ def build_export_artifacts(
     directivity: DirectivityResult | None = None,
 ) -> ExportArtifacts:
     frame = build_pattern_export_frame(cuts, great_circle_cuts)
+    pattern_csv = frame.to_csv(index=False).encode("utf-8")
+    design_report = build_design_report(
+        state,
+        cuts,
+        great_circle_cuts=great_circle_cuts,
+        directivity=directivity,
+    ).encode("utf-8")
+    settings_json, reproducibility_zip = _build_reproducibility_files(
+        state, pattern_csv, design_report, directivity
+    )
     return ExportArtifacts(
-        pattern_csv=frame.to_csv(index=False).encode("utf-8"),
-        design_report=build_design_report(
-            state,
-            cuts,
-            great_circle_cuts=great_circle_cuts,
-            directivity=directivity,
-        ).encode("utf-8"),
+        pattern_csv=pattern_csv,
+        design_report=design_report,
+        settings_json=settings_json,
+        reproducibility_zip=reproducibility_zip,
     )

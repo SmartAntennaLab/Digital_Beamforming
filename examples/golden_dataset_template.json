@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "replace-with-MATLAB-or-measurement-reference",
+  "source": "other",
+  "normalization": "peak_db",
+  "tolerance_db": 1.0,
+  "samples": [
+    {"azimuth_deg": -30.0, "elevation_deg": 0.0, "gain_db": -12.0},
+    {"azimuth_deg": 0.0, "elevation_deg": 0.0, "gain_db": 0.0},
+    {"azimuth_deg": 30.0, "elevation_deg": 0.0, "gain_db": -12.0}
+  ]
+}

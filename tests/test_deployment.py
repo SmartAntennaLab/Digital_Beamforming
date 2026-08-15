@@ -37,6 +37,13 @@ class DeploymentConfigurationTests(unittest.TestCase):
                     "mypy==2.3.0",
                     "ruff==0.16.2",
                 ],
+                "ops": [
+                    "opentelemetry-api==1.44.0",
+                    "opentelemetry-exporter-otlp-proto-http==1.44.0",
+                    "opentelemetry-sdk==1.44.0",
+                    "prometheus-client==0.26.0",
+                    "redis==8.1.0",
+                ],
             },
         )
         self.assertFalse((PROJECT_ROOT / "requirements.txt").exists())
@@ -51,9 +58,10 @@ class DeploymentConfigurationTests(unittest.TestCase):
             for package in packages
             if package["name"] == "digital-beamforming-simulator"
         )
-        self.assertEqual(project["version"], "1.5.0")
+        self.assertEqual(project["version"], "1.7.0")
         self.assertEqual(
-            set(project["optional-dependencies"]), {"dev", "e2e", "quality"}
+            set(project["optional-dependencies"]),
+            {"dev", "e2e", "quality", "ops"},
         )
         for package in packages:
             if "registry" not in package.get("source", {}):
@@ -88,6 +96,23 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertIn('"DBF_PERF_FAST_64_SECONDS", 6.0', performance_gate)
         self.assertIn("> 0.5", performance_gate)
 
+        full_gate = (
+            PROJECT_ROOT / "benchmarks" / "check_full_performance_regression.py"
+        ).read_text(encoding="utf-8")
+        for workload in (
+            "directivity",
+            "surface",
+            "multi_null",
+            "automatic_scan",
+        ):
+            self.assertIn(workload, full_gate)
+        soak = (PROJECT_ROOT / "benchmarks" / "soak_multi_session.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("memory-budget-mib", soak)
+        self.assertIn("ComputeExecutor(", soak)
+        self.assertIn('mode=mode', soak)
+
     def test_devcontainer_syncs_only_from_the_frozen_lock(self):
         config = json.loads(
             (PROJECT_ROOT / ".devcontainer" / "devcontainer.json").read_text(
@@ -97,7 +122,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertNotIn("updateContentCommand", config)
         install_command = config["postCreateCommand"]
         self.assertEqual(install_command.count("uv sync --frozen"), 1)
-        self.assertIn("uv==0.11.29", install_command)
+        self.assertIn("uv==0.12.3", install_command)
         self.assertIn("--extra dev", install_command)
         self.assertNotIn("requirements.txt", install_command)
         self.assertNotIn("install --user", install_command)
@@ -149,6 +174,12 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertIn("coverage run", ci)
         self.assertIn("coverage report", ci)
         self.assertIn("check_performance_regression.py", ci)
+        self.assertIn("check_full_performance_regression.py", ci)
+        self.assertIn("soak_multi_session.py", ci)
+        self.assertIn("ops-integration:", ci)
+        self.assertIn("redis:8.2-alpine", ci)
+        self.assertIn("RUN_PROCESS_POOL_INTEGRATION", ci)
+        self.assertIn("metric_exporter import OTLPMetricExporter", ci)
 
         self.assertIn("schedule:", dependency_health)
         self.assertIn("--all-extras", dependency_health)
@@ -175,13 +206,39 @@ class DeploymentConfigurationTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("auth_basic_user_file", nginx)
+        oauth2_proxy = (
+            PROJECT_ROOT / "deploy" / "oauth2-proxy.cfg.example"
+        ).read_text(encoding="utf-8")
+        prometheus = (
+            PROJECT_ROOT / "deploy" / "prometheus.yml.example"
+        ).read_text(encoding="utf-8")
+        alerts = (
+            PROJECT_ROOT / "deploy" / "prometheus-alerts.yml.example"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("auth_basic", nginx)
+        self.assertIn("auth_request /oauth2/auth", nginx)
+        self.assertIn("X-Auth-Request-Email", nginx)
         self.assertIn("limit_req_zone", nginx)
         self.assertIn("limit_conn_zone", nginx)
         self.assertIn("proxy_set_header Upgrade", nginx)
+        self.assertIn("least_conn", nginx)
         self.assertIn("CPUQuota=", service)
         self.assertIn("MemoryMax=", service)
-        self.assertIn("compute_health", deployment_guide)
+        self.assertIn(".venv/bin/python server.py", service)
+        self.assertIn("DBF_COMPUTE_BACKEND=process", service)
+        self.assertIn('provider = "oidc"', oauth2_proxy)
+        self.assertIn('session_store_type = "redis"', oauth2_proxy)
+        self.assertIn("/metrics", prometheus)
+        self.assertIn("dbf-alerts.yml", prometheus)
+        self.assertIn("dbf_compute_coordinator_available", alerts)
+        self.assertIn("dbf_compute_duration_seconds_bucket", alerts)
+        self.assertIn("OIDC", deployment_guide)
+        self.assertIn("Prometheus", deployment_guide)
+        self.assertIn("OpenTelemetry", deployment_guide)
+        self.assertIn("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", deployment_guide)
+        self.assertIn("DBF_REDIS_URL", deployment_guide)
+        self.assertIn("DBF_GLOBAL_MAX_CONCURRENT_CALCULATIONS", deployment_guide)
         self.assertIn("DBF_MAX_CONCURRENT_CALCULATIONS", deployment_guide)
 
 

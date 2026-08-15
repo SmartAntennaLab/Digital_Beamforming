@@ -7,6 +7,7 @@ from resource_policy import (
     HARD_MAX_CONCURRENT_CALCULATIONS,
     HARD_MAX_DIRECTIVITY_EXACT_ELEMENTS,
     HARD_MAX_ELEMENTS,
+    HARD_MAX_GLOBAL_CONCURRENT_CALCULATIONS,
     HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE,
     ResourcePolicy,
     estimate_element_count,
@@ -75,6 +76,9 @@ class ResourcePolicyTests(unittest.TestCase):
                     HARD_MAX_CONCURRENT_CALCULATIONS * 10
                 ),
                 "DBF_COMPUTE_TIMEOUT_SECONDS": str(HARD_MAX_COMPUTE_SECONDS * 10),
+                "DBF_GLOBAL_MAX_CONCURRENT_CALCULATIONS": str(
+                    HARD_MAX_GLOBAL_CONCURRENT_CALCULATIONS * 10
+                ),
                 "DBF_SESSION_CALCULATIONS_PER_MINUTE": str(
                     HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE * 10
                 ),
@@ -88,6 +92,10 @@ class ResourcePolicyTests(unittest.TestCase):
             HARD_MAX_CONCURRENT_CALCULATIONS,
         )
         self.assertEqual(policy.compute_timeout_seconds, HARD_MAX_COMPUTE_SECONDS)
+        self.assertEqual(
+            policy.global_max_concurrent_calculations,
+            HARD_MAX_GLOBAL_CONCURRENT_CALCULATIONS,
+        )
         self.assertEqual(
             policy.session_calculations_per_minute,
             HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE,

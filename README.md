@@ -1,6 +1,6 @@
 # Digital Beamforming Simulator
 
-ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 대상으로 정적 협대역 빔포밍을 분석하는 Streamlit 시뮬레이터입니다. 조향 방향, 배열 간격, 진폭 창, 위상 양자화, 소자 결함과 최대 8개의 간섭 방향 null 제약을 적용하고 2D/3D 패턴, 물리적 빔폭과 전구 적분 Directivity를 함께 확인할 수 있습니다.
+ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 대상으로 빔포밍을 분석하는 Streamlit 시뮬레이터입니다. 기본 정적 협대역 모델에 더해 배열/RF 오차, 실측 소자 패턴·편파, Wideband Beam Squint, Near-field focusing, 확률 채널·SINR, MVDR/LCMV와 MUSIC DOA를 선택적으로 계산합니다.
 
 이 프로그램은 RF/IQ 수신기나 실제 안테나 하드웨어를 제어하지 않습니다.
 
@@ -20,14 +20,14 @@ ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 �
 - 좌표각·실제 각거리 HPBW, FNBW, SLL, 상대 배열 이득, 전구 적분 Directivity, 테이퍼·위상 효율
 - Directivity 자동·정확·고속 근사 모드, 대형 배열 상한·경고와 동일 기하 kernel 캐시
 - 형상별 격자 로브 또는 공간 앨리어싱 위험 진단
-- CSV 패턴 데이터와 Markdown 설계 보고서 다운로드
+- CSV 패턴, Markdown 보고서, 설정 JSON과 manifest·Git commit·난수 시드를 포함한 재현성 ZIP 다운로드
 - 동적 탭, form, fragment와 각도·소자 청크 기반 대규모 배열 계산
 - 자동 스캔의 2D 전용·3D 미리보기·전체 품질 모드, 예상 시간 안내와 종료 후 전체 품질 최종 프레임
 - Custom Component v2 기반 장치·브라우저별 설정 자동 복원과 선택적 공유 링크
 
-## v1.5 개발 상태
+## v1.7 개발 상태
 
-2026-08-10 기준으로 다음 확장을 반영했습니다.
+2026-08-14 기준으로 다음 확장을 반영했습니다.
 
 - 좌표각 HPBW와 목표 방향을 지나는 Great-circle 실제 각거리 HPBW 분리
 - 최종 가중치의 전구 방사전력 적분 기반 directional directivity 추가
@@ -35,8 +35,16 @@ ULA·UPA·UCA와 MATLAB Phased Array Gallery 방식의 UHA 안테나 배열을 �
 - 다중 null, 방향별 요구 억압량, 위상 전용 최적화, 소자 진폭 상한과 미달·포화 진단 추가
 - 패턴·지표·소자 UI, 설정 저장, 스캔 제어, 패턴 표본화 모듈 분리
 - 동시 계산·대기열·세션 호출률·deadline·취소 및 자원 상한 보호 추가
+- 운영용 Process Pool 계산 분리와 worker recycle 추가
+- Redis 기반 replica 전역 동시성·OIDC 사용자별 rate limit 추가
+- Prometheus 지표, OpenTelemetry OTLP trace, health/readiness endpoint 추가
+- OIDC/SSO reverse proxy 배포 예제와 전체 기능 성능·다중 세션 soak 게이트 추가
+- 상호 결합, 소자 위치·진폭·위상 보정 오차와 실측 co/cross-polar 소자 패턴 추가
+- 고정 phase-shifter Wideband Beam Squint, 구면파 Near-field focusing 추가
+- 잡음·다중경로 채널/SINR, MVDR·LCMV, MUSIC DOA와 Golden Dataset 교차 검증 추가
+- 설정 JSON과 앱 버전·Git commit·난수 시드·정확/근사 계산법 manifest를 담은 재현성 ZIP 추가
 
-일반 환경의 전체 회귀 검사 결과는 **143개 통과, 브라우저 E2E 1개 skip**입니다. E2E는 `RUN_E2E=1`인 GitHub Actions 전용 단계에서 Chromium으로 별도 실행합니다.
+브라우저 E2E, Redis 및 spawn Process Pool 통합 시험은 각각 명시적인 환경 변수를 켠 CI 단계에서 실행합니다.
 
 ## 지원 환경
 
@@ -62,7 +70,7 @@ Streamlit 1.60 자체는 Python 3.10–3.14를 지원하지만, 이 프로젝트
 | pandas | 2.3.3 | CSV 내보내기 데이터 구성 |
 | psutil | 7.2.2 | 프로세스 CPU·RSS와 시스템 자원 모니터링 |
 
-`pyproject.toml`은 Python 범위를 `>=3.11,<3.15`로 제한하고 의존성을 네 그룹으로 분리합니다.
+`pyproject.toml`은 Python 범위를 `>=3.11,<3.15`로 제한하고 의존성을 다섯 그룹으로 분리합니다.
 
 | 그룹 | 설치 대상 |
 |---|---|
@@ -70,8 +78,9 @@ Streamlit 1.60 자체는 Python 3.10–3.14를 지원하지만, 이 프로젝트
 | `dev` extra | pip, pip-audit, pip-licenses, setuptools |
 | `e2e` extra | Playwright |
 | `quality` extra | Coverage.py 7.15.4, Ruff 0.16.2, mypy 2.3.0 |
+| `ops` extra | Redis client, Prometheus client, OpenTelemetry OTLP exporter |
 
-`uv.lock`은 위 직접 의존성과 모든 전이 의존성의 정확한 버전, 운영체제·Python 마커, 배포 파일 SHA-256을 함께 기록하는 단일 잠금 소스입니다. 수동으로 편집하지 말고 `uv lock`으로만 갱신합니다. 이 프로젝트가 검증한 uv 버전은 **0.11.29**입니다.
+`uv.lock`은 위 직접 의존성과 모든 전이 의존성의 정확한 버전, 운영체제·Python 마커, 배포 파일 SHA-256을 함께 기록하는 단일 잠금 소스입니다. 수동으로 편집하지 말고 `uv lock`으로만 갱신합니다. 이 프로젝트가 검증한 uv 버전은 **0.12.3**입니다.
 
 ## 정확한 로컬 설치 절차
 
@@ -82,18 +91,18 @@ Streamlit 1.60 자체는 Python 3.10–3.14를 지원하지만, 이 프로젝트
 Python 3.11이 설치된 새 환경에서:
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.11.29/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.12.3/install.ps1 | iex"
 # PowerShell을 다시 연 뒤 저장소 루트에서 실행
 uv sync --frozen --python 3.11
 uv run --frozen --no-sync streamlit run main.py
 ```
 
-uv 0.11.29가 이미 설치되어 있다면 첫 명령은 생략합니다. uv는 지원 범위의 Python을 찾지 못하면 호환되는 CPython을 내려받을 수 있습니다.
+uv 0.12.3가 이미 설치되어 있다면 첫 명령은 생략합니다. uv는 지원 범위의 Python을 찾지 못하면 호환되는 CPython을 내려받을 수 있습니다.
 
 ### macOS/Linux
 
 ```bash
-curl -LsSf https://astral.sh/uv/0.11.29/install.sh | sh
+curl -LsSf https://astral.sh/uv/0.12.3/install.sh | sh
 # 셸을 다시 연 뒤 저장소 루트에서 실행
 uv sync --frozen --python 3.11
 uv run --frozen --no-sync streamlit run main.py
@@ -119,7 +128,7 @@ uv tree --frozen
 Dev Container는 다음 순서로 동작합니다.
 
 1. Python 3.11 Debian 12 이미지를 생성합니다.
-2. `postCreateCommand`가 uv 0.11.29를 설치하고 `uv.lock`의 런타임과 `dev` extra를 `--frozen`으로 동기화한 뒤 `pip check`를 실행합니다.
+2. `postCreateCommand`가 uv 0.12.3를 설치하고 `uv.lock`의 런타임과 `dev` extra를 `--frozen`으로 동기화한 뒤 `pip check`를 실행합니다.
 3. 컨테이너에 연결되면 `uv run --frozen --no-sync streamlit run main.py --server.headless=true`를 실행합니다.
 4. 8501 포트를 전달하고 VS Code 미리 보기를 엽니다.
 
@@ -152,6 +161,8 @@ uv run --frozen --no-sync mypy
 uv run --frozen --no-sync coverage run -m unittest tests.test_beamforming tests.test_directivity tests.test_simulation tests.test_resource_policy
 uv run --frozen --no-sync coverage report
 uv run --frozen --no-sync python benchmarks/check_performance_regression.py
+uv run --frozen --no-sync python benchmarks/check_full_performance_regression.py
+uv run --frozen --no-sync python benchmarks/soak_multi_session.py --sessions 4 --iterations 2 --backend process --workers 2 --memory-budget-mib 256
 ```
 
 Coverage.py는 UI 계층을 제외한 수치 코어의 statement와 branch를 함께 측정하며 최소 **80%**를 요구합니다. 2026-08-10 기준 측정값은 **87.3%**입니다. mypy는 동일 수치 코어 9개 모듈을 검사하고 Ruff는 전체 Python 저장소에서 import, 오류 가능 문법, pyupgrade와 bugbear 규칙을 검사합니다.
@@ -165,7 +176,7 @@ $env:RUN_E2E = "1"
 uv run --frozen --no-sync python -m unittest tests.e2e.test_local_storage -v
 ```
 
-일반 단위 테스트에서는 이 E2E가 자동으로 skip됩니다. GitHub Actions는 Windows와 Linux에서 Python 3.11·3.14 잠금 설치 및 단위 테스트를 실행하고, Linux Python 3.11에서 Chromium E2E를 실행합니다. 별도 Linux Python 3.11 `quality-gates` job이 Ruff, mypy, branch coverage, 64×64 Directivity 성능 회귀를 순차적으로 차단 기준으로 적용합니다.
+일반 단위 테스트에서는 이 E2E가 자동으로 skip됩니다. GitHub Actions는 Windows와 Linux에서 Python 3.11·3.14 잠금 설치 및 단위 테스트를 실행하고, Linux Python 3.11에서 Chromium E2E를 실행합니다. 별도 `quality-gates` job은 Ruff, mypy, branch coverage, Directivity·3D Surface·다중 Null·자동 스캔·실제 시스템 모델 성능 회귀와 Process Pool soak를 적용합니다. `ops-integration` job은 실제 Redis service와 spawn worker를 검증합니다.
 
 개발·E2E 도구를 포함한 전체 잠금 집합을 검사하려면 다음 명령을 사용합니다.
 
@@ -178,6 +189,8 @@ uv run --frozen --no-sync python -m piplicenses --format=markdown --with-authors
 ```
 
 CI는 모든 알려진 취약점에서 실패하므로 고위험 취약점 0개보다 엄격합니다. 라이선스 검사는 GPL·AGPL 또는 알 수 없는 라이선스가 검출되면 실패합니다. `dependency-health.yml`이 매주 화요일 02:17(KST)에 같은 검사를 다시 실행하고, Dependabot이 매주 uv 및 GitHub Actions 갱신 PR을 생성합니다.
+
+사이드바 설정은 `기본 설정 → 조향 설정 → Null 설정 → 하드웨어 현실성 → 시각화 설정 → 고급 계산·스캔 설정 → 실제 시스템 모델·검증` 순서의 접이식 섹션으로 구성됩니다. `영점 조향 활성화`를 켜기 전에는 간섭원 방향·억압량·Null 최적화 입력을 표시하지 않습니다. 토글과 간섭원 수는 입력 영역만 즉시 변경하며, `설정 적용 및 계산`을 눌러야 결과에 반영됩니다. 결과 탭 위의 `현재 계산 조건` 카드는 배열·주파수·조향·Null·하드웨어 조건, 활성 실제 시스템 모델, 난수 시드와 Directivity·스캔 계산 모드를 항상 현재 적용값 기준으로 보여줍니다.
 
 `설정 적용 및 계산`을 누르면 주요 안테나·조향·시각화·스캔 입력이 브라우저 `localStorage`의 `digital_beamforming.settings.v1` 항목에 저장됩니다. 서버나 다른 장치로 전송하지 않으므로 같은 서버에 접속해도 PC와 휴대폰은 각자 마지막 값을 복원합니다. `공유 링크 생성`을 눌렀을 때만 검증된 설정이 URL의 단일 `settings` 파라미터로 추가되며, 공유 URL은 해당 브라우저의 저장값보다 우선합니다. 공유 링크로 연 설정에서 `설정 적용 및 계산`을 누르면 그 장치에 저장하고 주소의 공유 파라미터를 제거합니다. `저장 설정 초기화`는 현재 브라우저의 저장값과 공유 URL을 지웁니다. 자동 스캔의 실행 여부와 현재 프레임은 일시적인 상태이므로 저장하지 않습니다.
 
@@ -197,17 +210,27 @@ Digital_Beamforming/
 ├── .streamlit/
 │   └── config.toml            # 서버 포트와 CORS/XSRF 보호 설정
 ├── deploy/
-│   ├── nginx.conf.example     # TLS·Basic Auth·IP rate/connection limit 예제
-│   ├── digital-beamforming.service.example # systemd CPU·메모리 quota 예제
+│   ├── nginx.conf.example     # TLS·OIDC auth_request·replica proxy 예제
+│   ├── oauth2-proxy.cfg.example # OIDC와 Redis session store 예제
+│   ├── prometheus.yml.example # scrape·경보 규칙 예제
+│   ├── prometheus-alerts.yml.example # Redis·포화·오류율·p95 경보
+│   ├── otel-collector.yaml.example # OTLP collector 예제
+│   ├── digital-beamforming.service.example # Process Pool·systemd quota 예제
 │   └── README.md              # 공개 서버 보호·모니터링 운영 절차
 ├── benchmarks/
 │   ├── benchmark_directivity.py # 64×64 이상 지향도 시간·peak RSS 측정
+│   ├── benchmark_workloads.py # 전체 계산 workload 정의
+│   ├── check_full_performance_regression.py # 5개 기능 회귀 게이트
+│   ├── soak_multi_session.py  # 다중 세션·parent/worker RSS soak
 │   └── README.md              # 실행법과 기준 측정 결과
 ├── tests/
 │   ├── e2e/
 │   │   └── test_local_storage.py # 실제 localStorage 새로고침·복원 테스트
+│   ├── integration/
+│   │   └── test_redis_coordination.py # 실제 Redis 전역 조정 시험
 │   ├── __init__.py
 │   ├── test_app.py            # 동적 탭과 fragment 통합 테스트
+│   ├── test_advanced_models.py # 오차·Wideband·Near-field·채널·Golden 회귀
 │   ├── test_beamforming.py    # 수학 로직 회귀 테스트
 │   ├── test_compute_governor.py # semaphore·rate limit·deadline·취소 테스트
 │   ├── test_directivity.py     # 전구 적분 지향도 수치 회귀 테스트
@@ -217,38 +240,52 @@ Digital_Beamforming/
 │   └── test_simulation.py     # 프레임·청크·스캔 회귀 테스트
 ├── array_geometry.py          # 배열 좌표·창·결함·격자 로브
 ├── array_math.py              # 방향 코사인·조향 벡터·소자 패턴
+├── advanced_model_controls.py # 7단계 실제 시스템 모델·업로드 설정 UI
 ├── beamforming.py             # 분리된 수치 API의 호환 import 계층
 ├── compute_governor.py        # 프로세스 동시성·세션 빈도·취소·자원 계측
+├── compute_executor.py        # inline·spawn Process Pool 계산 실행기
+├── compute_tasks.py           # 직렬화 가능한 전체 화면 계산 bundle
+├── distributed_coordination.py # Redis 전역 동시성·token bucket
 ├── device_settings.py         # 장치별 설정 스키마·검증·공유 토큰
 ├── device_storage.py          # Streamlit CCv2 localStorage 브리지
 ├── directivity.py             # 전구 방사전력 적분과 목표 방향 지향도
 ├── directivity_controls.py    # Directivity 계산 모드와 대형 배열 경고 UI
-├── exporters.py               # CSV·Markdown 내보내기
+├── element_pattern_data.py    # 실측 co/cross-polar 패턴 CSV 검증·보간
+├── exporters.py               # CSV·Markdown·JSON·재현성 ZIP 내보내기
 ├── interferer_sampling.py     # Null 적용 전후 응답·간섭원 great-circle 컷
+├── golden_validation.py       # MATLAB·측정 Golden Dataset 비교
+├── measured_directivity.py    # 실측 패턴 전구 수치 직접도 적분
 ├── model_options.py           # 안정적인 내부 ID와 한글 UI 라벨
-├── null_controls.py           # 간섭원 수 draft/applied 상태와 제약 목록
+├── null_controls.py           # Null 활성화·간섭원 수 draft/applied 상태와 제약 목록
 ├── null_solver.py             # SVD 제한 최소제곱과 진단
+├── observability.py           # Prometheus 지표·OpenTelemetry trace
 ├── pattern_metrics.py         # 배열 인자·정규화·HPBW/FNBW/SLL·이득
 ├── pattern_sampling.py        # 좌표각·Great-circle 컷과 적응형 3D 표면 샘플링
 ├── resource_policy.py         # 요청·프로세스·세션별 계산 정책과 절대 상한
 ├── scan_controls.py           # 자동 스캔 폼·품질·시간 추정·시작/중지 상태
+├── signal_processing.py       # Wideband·채널·SINR·MVDR/LCMV·MUSIC
 ├── settings_panel.py          # 배열·조향·Null 입력 패널 조립
+├── settings_sections.py       # 1~6단계 사이드바 설정 섹션 렌더링
 ├── settings_storage.py        # 브라우저 저장·공유 링크·세션 설정 초기화
 ├── simulation.py              # UI 독립 상태 생성·directivity·스캔 orchestration
+├── physical_effects.py        # 위치·보정·상호 결합·구면파 초점 모델
 ├── simulation_cache.py        # 제한된 Streamlit 계산 캐시
 ├── ui_elements.py             # 소자 배치·위상·진폭·포화 렌더링
 ├── ui_formatters.py           # N/A·단위·진단 표시 형식
 ├── ui_metrics.py              # 성능 지표·Null 진단·내보내기 UI
+├── ui_advanced_metrics.py     # 실제 시스템·적응·Golden 결과 UI
 ├── ui_pattern.py              # 2D/3D 방사 패턴 Plotly 렌더링
 ├── ui_renderers.py            # 공통 진단과 기존 렌더러 import 호환 facade
+├── ui_summary.py              # 결과 상단의 현재 계산 조건 요약
 ├── main.py                    # 앱 조립·동적 탭·fragment 진입점
+├── server.py                  # 운영 ASGI·health/readiness/metrics·인증 헤더 검증
 ├── pyproject.toml             # Python 범위와 런타임·dev·E2E 직접 의존성
 ├── uv.lock                    # 전이 의존성 버전·플랫폼 마커·SHA-256 잠금
 ├── README.md                  # 기준 설치·모델·배포 문서
 └── ReadMe.txt                 # README.md로 안내하는 이전 파일명 호환 문서
 ```
 
-`array_geometry.py`, `array_math.py`, `null_solver.py`, `pattern_metrics.py`, `pattern_sampling.py`, `directivity.py`, `beamforming.py`, `simulation.py`는 Streamlit에 의존하지 않으므로 별도 Python 코드에서도 가져와 사용할 수 있습니다. 코어 설정은 `UPA`, `uniform`, `isotropic`, `db` 같은 안정적인 ID를 사용하고 한글 문구는 UI에서만 변환합니다.
+`array_geometry.py`, `array_math.py`, `null_solver.py`, `pattern_metrics.py`, `pattern_sampling.py`, `directivity.py`, `element_pattern_data.py`, `physical_effects.py`, `signal_processing.py`, `golden_validation.py`, `beamforming.py`, `simulation.py`는 Streamlit에 의존하지 않으므로 별도 Python 코드에서도 가져와 사용할 수 있습니다. 코어 설정은 `UPA`, `uniform`, `isotropic`, `db` 같은 안정적인 ID를 사용하고 한글 문구는 UI에서만 변환합니다.
 
 ## 좌표계와 배열 모델
 
@@ -371,17 +408,30 @@ Directivity = 10 log10(D_target) dBi
 
 재현 가능한 64×64·128×128 시간·메모리 측정은 [Directivity 벤치마크](benchmarks/README.md)를 참고하십시오.
 
-표시값은 조향 **목표 방향의 directional directivity**입니다. 실제 최대 방사 방향이 목표에서 벗어난 특이 설정에서는 패턴 전체의 최대 directivity와 다를 수 있습니다. 또한 급전·RF 손실과 상호 결합을 포함하지 않으므로 realized gain이 아닙니다. 3D 표면은 계속 시각화 전용이며 directivity 적분의 분모로 재사용하지 않습니다.
+표시값은 조향 **목표 방향의 directional directivity**입니다. 실제 최대 방사 방향이 목표에서 벗어난 특이 설정에서는 패턴 전체의 최대 directivity와 다를 수 있습니다. 상호 결합을 선택하면 최근접 복소 결합 효과는 포함하지만 급전·RF 손실과 능동 회로 포화는 포함하지 않으므로 realized gain 자체는 아닙니다. 3D 표면은 계속 시각화 전용이며 directivity 적분의 분모로 재사용하지 않습니다. 업로드 실측 소자 패턴은 해석 pairwise kernel 대신 96×48 Gauss–Legendre 전구 적분을 사용하고 manifest에 근사 계산으로 기록됩니다.
+
+## 실제 시스템 모델과 검증 데이터
+
+- **배열/RF 오차:** 난수 시드로 재현되는 Y/Z 위치 오차와 소자별 진폭·위상 보정 오차를 적용합니다. 상호 결합은 기준 간격의 1.2배 이내에 있는 활성 소자 사이의 동일 복소 결합 계수로 근사합니다.
+- **편파·실측 패턴:** 내장 패턴은 선형 편파 mismatch를 적용합니다. 업로드 CSV는 완전한 Azimuth/Elevation 직사각 grid여야 하며 co/cross-polar gain 열과 선택적 phase 열을 복소 bilinear 보간합니다. 형식 예시는 [`examples/element_pattern_template.csv`](examples/element_pattern_template.csv)입니다.
+- **Wideband:** 중심 주파수에서 합성한 고정 phase-shifter 가중치를 대역 내 3~33개 주파수에 그대로 적용하여 목표 Elevation의 Azimuth 컷과 목표 Azimuth의 Elevation 컷 peak, 두 peak의 spherical squint와 목표 손실을 계산합니다.
+- **Near-field:** 지정 거리·방향의 점 초점에 대한 scalar spherical-wave phase conjugation과 `1/r` 전파를 계산하며 Rayleigh 거리와 coherence를 표시합니다. 현재 far-field Null 제약과는 동시에 사용할 수 없습니다.
+- **채널/SINR:** 원하는 신호, 선택한 Null 방향 또는 기본 간섭 방향, 소자별 복소 Gaussian 잡음과 seed 기반 다중경로 snapshot을 생성합니다. 계산량을 제한하기 위해 적응 분석은 활성 소자 중 최대 256개를 균일 추출합니다.
+- **MVDR/LCMV·DOA:** diagonal loading을 적용한 covariance 모델로 MVDR 또는 LCMV 출력 SINR을 구하고, 같은 snapshot covariance에 대해 현재 Elevation을 고정한 1D Azimuth MUSIC spectrum의 peak를 보고합니다.
+- **Golden Dataset:** MATLAB 또는 측정 데이터의 `azimuth_deg`, `elevation_deg`, `gain_db`를 peak-normalized dB로 비교해 RMSE·최대 오차·허용 오차 PASS/FAIL을 제공합니다. JSON 형식은 [`examples/golden_dataset_template.json`](examples/golden_dataset_template.json), CSV는 같은 세 열을 사용합니다. 예시 값은 형식 템플릿일 뿐 검증된 측정 기준값이 아닙니다.
+
+업로드는 UTF-8, 최대 1 MB로 제한되며 소자 패턴은 16,384개, Golden Dataset은 5,000개 표본까지만 허용합니다. 파일 객체 자체는 계산 캐시에 넣지 않고 검증 후 불변 숫자 tuple과 SHA-256으로 변환합니다.
 
 ## 모델 가정과 한계
 
-- 단일 주파수의 정적 협대역, 원거리장, 평면파 모델입니다.
-- 모든 소자는 위치 외에는 동일하고 시간·주파수 동기와 보정이 완벽하다고 가정합니다.
-- 소자 패턴은 배열 인자에 곱하는 실수 진폭 인자이며 편파는 모델링하지 않습니다.
+- 기본값은 단일 주파수의 정적 협대역·원거리장·평면파 모델이며, Wideband·Near-field·채널 분석은 사용자가 명시적으로 켤 때만 추가됩니다.
+- 위치·보정 오차는 독립 Gaussian 표본, 상호 결합은 최근접 동일 계수의 scalar 근사입니다. full-wave EM, scan impedance, 주파수별 S-parameter와 열 영향은 포함하지 않습니다.
+- 편파는 co/cross-polar 두 복소 성분과 단일 선형 편파 회전각으로 모델링하며 dual-polarized port network나 Jones/Mueller 전체 행렬은 포함하지 않습니다.
 - Isotropic은 전 방향 1, Cosine 계열은 +X broadside 기준, Dipole은 Z축 반파장 소자 모델입니다.
-- 잡음, 채널, 다중경로, 도래 신호 표본, SINR, RF/IQ 체인과 ADC/DAC는 포함하지 않습니다.
-- 상호 결합, 스캔 임피던스, 소자 위치 오차, 위상·진폭 보정 오차와 열 영향은 포함하지 않습니다.
-- 적응형 MVDR/LCMV, DOA 추정과 실시간 데이터 처리는 구현하지 않습니다.
+- Wideband는 소자 패턴·결합·채널의 주파수 의존성을 재보간하지 않는 fixed phase-shifter squint 분석이며 true-time-delay 모델은 아닙니다.
+- Near-field는 자유공간 scalar point-focus 모델이며 벽·지면·차폐·근접 산란체와 소자별 near-field pattern은 포함하지 않습니다.
+- 채널 모델은 통계적 baseband snapshot 분석입니다. RF/IQ 체인, ADC/DAC, Doppler, 지연 확산 파형과 실시간 수신 스트림은 포함하지 않습니다.
+- MUSIC은 현재 목표 Elevation을 고정한 1D Azimuth 추정이며 자동 source-count 선택이나 2D/3D DOA는 지원하지 않습니다.
 - 결함은 완전 비활성 소자로만 모델링하며 부분 성능 저하는 포함하지 않습니다.
 - 고정 좌표각 2D 컷은 전역 360개 표본, Great-circle 컷은 전 주평면의 전역 720개 표본에 정확한 목표점과 투영 개구 기반 국부 표본을 합칩니다. 실제 표본 수와 세분화 반폭은 패턴 탭에 표시되며, FNBW와 SLL 위치는 최종 비균일 표본 해상도의 영향을 받습니다.
 - 청크 처리는 배열 인자의 임시 위상 행렬을 기본 1,000,000개 항목 이하로 제한하지만 전체 좌표와 가중치는 메모리에 유지합니다.
@@ -415,14 +465,23 @@ enableXsrfProtection = true
 | 스캔 프레임 | 400 | 1,000 |
 | 누적 element-frames | 1,000,000 | 4,000,000 |
 | 프로세스 동시 계산 | 2 | 32 |
+| replica 전역 동시 계산 | 4 | 128 |
 | 계산 슬롯 대기 | 1초 | 30초 |
 | 계산 제한 시간 | 10초 | 120초 |
 | 세션 계산 빈도 | 분당 120회 | 분당 600회 |
 | 세션 순간 burst | 8회 | 60회 |
 
-운영 환경에서는 기존 `DBF_MAX_ELEMENTS`, `DBF_MAX_SCAN_FRAMES`, `DBF_MAX_SCAN_ELEMENT_FRAMES` 외에 `DBF_DIRECTIVITY_WARNING_ELEMENTS`, `DBF_DIRECTIVITY_EXACT_MAX_ELEMENTS`, `DBF_MAX_CONCURRENT_CALCULATIONS`, `DBF_COMPUTE_QUEUE_TIMEOUT_SECONDS`, `DBF_COMPUTE_TIMEOUT_SECONDS`, `DBF_SESSION_CALCULATIONS_PER_MINUTE`, `DBF_SESSION_BURST`, `DBF_HEALTH_LOG_INTERVAL_SECONDS`를 지정할 수 있습니다. 프로세스 전체 semaphore가 동시 계산을 제한하고, 세션별 token bucket이 반복 계산을 완화합니다. 계산 deadline과 사용자 취소는 배열 인자의 각도·소자 청크 경계에서 확인하므로 진행 중인 NumPy 호출 하나는 완료된 뒤 중단됩니다.
+운영 환경에서는 기존 자원 상한 외에 `DBF_COMPUTE_BACKEND=process`, `DBF_PROCESS_WORKERS`, `DBF_PROCESS_MAX_TASKS`, `DBF_REDIS_URL`, `DBF_REDIS_PREFIX`, `DBF_REDIS_FAIL_CLOSED`, `DBF_GLOBAL_MAX_CONCURRENT_CALCULATIONS`를 지정합니다. Streamlit 프로세스의 semaphore와 별도로 Redis 전역 lease가 모든 replica의 합산 동시 계산을 제한하며, token bucket은 OIDC 사용자 ID를 기준으로 공유됩니다. 계산 deadline과 사용자 취소는 Process Pool에도 전달되며 수치 계산의 청크 경계에서 협력적으로 중단됩니다.
 
-사이드바 `서버 계산 상태`에서 동시·대기 계산, CPU와 메모리, 거절·시간 초과·취소 누계를 확인할 수 있으며 동일 정보가 `compute_health` 구조화 로그로 주기적으로 출력됩니다. 이 제한은 애플리케이션 프로세스 내부 보호이며 사용자 인증, 여러 replica 전체의 전역 제한 또는 운영체제 quota를 대신하지 않습니다. 공개 배포에서는 [deploy/README.md](deploy/README.md)의 Nginx Basic Auth·IP rate limit 예제와 systemd CPU·메모리 제한을 함께 적용하십시오.
+사이드바 `서버 계산 상태`에서 local/global 활성 계산, worker 상태, CPU와 메모리, 거절·시간 초과·취소 누계를 확인할 수 있으며 동일 정보가 구조화 로그와 Prometheus 지표로 제공됩니다. 공개 배포는 Basic Auth 대신 [운영 가이드](deploy/README.md)의 OIDC/SSO, Nginx IP 제한, Redis, systemd quota와 OpenTelemetry 구성을 함께 적용하십시오.
+
+로컬 개발은 기본 `inline` backend로 `main.py`를 실행합니다. 운영 ASGI 진입점은 다음과 같습니다.
+
+```bash
+uv sync --frozen --extra ops --python 3.11
+DBF_COMPUTE_BACKEND=process DBF_REDIS_URL=redis://127.0.0.1:6379/0 \
+  uv run --frozen --no-sync python server.py
+```
 
 ## Streamlit Community Cloud 배포
 
@@ -440,6 +499,9 @@ Community Cloud는 `uv.lock`과 `pyproject.toml`을 사용해 기본 런타임 �
 ## 성능 구조
 
 - form 제출 전에는 입력 변경으로 비싼 계산을 다시 실행하지 않습니다.
+- 활성 화면의 상태·2D/3D·Directivity·다중 Null 결과를 직렬화 가능한 하나의 계산 bundle로 만들고 운영에서는 spawn Process Pool worker에 전달합니다.
+- Process Pool worker는 최대 작업 수 이후 재생성하며 BLAS thread 중첩을 제한합니다. 로컬 개발과 Streamlit Community Cloud는 기본 inline backend를 유지합니다.
+- Redis가 모든 replica의 전역 계산 lease와 OIDC 사용자별 rate limit을 공유하고, 장애 시 운영 기본값은 fail-closed입니다. 계산 결과 캐시는 Redis로 전송하지 않고 각 Streamlit 프로세스에서 최대 16개만 유지합니다.
 - Streamlit 1.60 동적 탭의 `.open` 상태를 확인해 현재 탭만 계산합니다.
 - 자동 스캔은 `st.fragment(run_every=...)`로 활성 탭만 갱신합니다.
 - 자동 스캔의 기본값인 `3D 미리보기`는 실행 중 전역 16×16과 목표 주변 17개 표본을 사용합니다. `2D 전용`은 실행 중 3D를 생략하고, `전체 품질 3D`는 모든 프레임을 정상 해상도로 계산합니다.
@@ -449,11 +511,14 @@ Community Cloud는 `uv.lock`과 `pyproject.toml`을 사용해 기본 런타임 �
 - Directivity는 성능 지표 탭을 열 때만 계산하고 제한된 결과 캐시에 저장합니다. 1,024소자 이하의 해석 kernel은 정규화 기하별 32 MiB LRU 캐시에 저장하며, 대형 배열은 자동으로 비균일 전구 적분을 사용합니다. 모든 적분 경로가 계산 취소·시간 제한을 확인합니다.
 - 3D 패턴은 배열 크기에 따라 전역 각도 해상도를 제한하고, 좁은 주엽을 놓치지 않도록 목표 방향 주변만 적응형으로 세분화합니다.
 - Streamlit 데이터 캐시는 `max_entries`로 상한을 둡니다.
+- CI는 Directivity뿐 아니라 3D Surface, 4개 다중 Null, 자동 스캔, Wideband·Near-field·채널·LCMV·MUSIC 통합 계산의 시간·peak RSS·결과 유효성과 다중 세션 Process Pool soak를 차단 기준으로 검사합니다.
 
 ## 출력 데이터
 
 - `beam_pattern_data.csv`: 서로 독립적인 Azimuth/Elevation 좌표 컷과 수평/수직 Great-circle 비균일 각거리 및 각 정규화 이득. 검출 기반 파생 지표의 sentinel 값은 포함하지 않습니다.
 - `beamforming_design_report.md`: 배열 설정, 조향 조건, 좌표각·실제 각거리 HPBW/FNBW/SLL, 상대 배열 이득, Directivity와 null 지표. 미검출 지표는 `N/A`로 기록합니다.
+- `simulation_settings.json`: 앱 버전, Git commit, 난수 시드와 업로드 패턴·Golden Dataset 수치까지 포함한 전체 `SimulationConfig`입니다.
+- `beamforming_reproducibility.zip`: 위 세 파일과 각 파일의 SHA-256·크기, 생성 UTC, Directivity 요청/실제 모드, 정확/근사 여부와 모델 식별자를 기록한 `manifest.json`을 포함합니다.
 
 ## 참고 문서
 

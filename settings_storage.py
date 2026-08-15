@@ -24,6 +24,8 @@ def apply_persistent_settings(settings: Mapping[str, object]) -> None:
     sanitized = sanitize_device_settings(settings)
     for key, value in sanitized.items():
         st.session_state[key] = value
+    if "enable_null" in sanitized:
+        st.session_state["_draft_enable_null"] = bool(sanitized["enable_null"])
     if "null_count" in sanitized:
         st.session_state["_draft_null_count"] = int(sanitized["null_count"])
 
@@ -55,6 +57,7 @@ def request_device_settings_clear() -> None:
 
     for key in DEVICE_SETTING_KEYS:
         st.session_state.pop(key, None)
+    st.session_state.pop("_draft_enable_null", None)
     st.session_state.pop("_draft_null_count", None)
     st.session_state["is_scanning"] = False
     st.session_state["scan_idx"] = 0
@@ -94,6 +97,10 @@ def initialize_settings_storage() -> None:
     st.session_state.setdefault("_device_settings_applied", False)
     for setting_key, default_value in DEFAULT_DEVICE_SETTINGS.items():
         st.session_state.setdefault(setting_key, default_value)
+    st.session_state.setdefault(
+        "_draft_enable_null",
+        bool(st.session_state["enable_null"]),
+    )
     st.session_state.setdefault(
         "_draft_null_count",
         int(st.session_state["null_count"]),

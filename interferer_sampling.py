@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from beamforming import array_factor
+from element_pattern_data import evaluate_element_pattern
 from pattern_sampling import pattern_cut_local_sample_count
 
 if TYPE_CHECKING:
@@ -20,6 +21,16 @@ ComplexArray = NDArray[np.complex128]
 INTERFERER_RESPONSE_SCHEMA_VERSION = 1
 INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION = 1
 INTERFERER_GREAT_CIRCLE_BASE_SAMPLE_COUNT = 360
+
+
+def _element_pattern(state: SimulationState, azimuth_rad, elevation_rad):
+    return evaluate_element_pattern(
+        state.config.element_option,
+        azimuth_rad,
+        elevation_rad,
+        pattern_grid=state.config.element_pattern_grid,
+        polarization_angle_deg=state.config.polarization_angle_deg,
+    )
 
 
 @dataclass(frozen=True)
@@ -122,8 +133,7 @@ def _exact_array_response(
     max_chunk_entries: int,
     cancel_check: Callable[[], None] | None,
 ) -> complex:
-    return complex(
-        array_factor(
+    response = array_factor(
             state.coordinates.y,
             state.coordinates.z,
             state.complex_weights,
@@ -132,8 +142,9 @@ def _exact_array_response(
             elevation_rad,
             max_chunk_entries=max_chunk_entries,
             cancel_check=cancel_check,
-        ).item()
-    )
+        )
+    response *= _element_pattern(state, azimuth_rad, elevation_rad)
+    return complex(response.item())
 
 
 def _local_angular_half_width(aperture_m: float, wavelength_m: float) -> float:
@@ -339,6 +350,8 @@ def calculate_interferer_great_circle_cuts(
             max_chunk_entries=max_chunk_entries,
             cancel_check=cancel_check,
         )
+        before_pattern *= _element_pattern(baseline_state, azimuth, elevation)
+        after_pattern *= _element_pattern(state, azimuth, elevation)
         cuts.append(
             InterfererGreatCircleCut(
                 schema_version=INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION,

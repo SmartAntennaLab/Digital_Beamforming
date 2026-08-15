@@ -6,6 +6,7 @@ import uuid
 
 import streamlit as st
 
+from compute_executor import get_compute_executor
 from compute_governor import (
     ComputeBusyError,
     ComputeCancelled,
@@ -13,38 +14,22 @@ from compute_governor import (
     SessionRateLimitError,
     get_compute_governor,
 )
-from directivity import DIRECTIVITY_SCHEMA_VERSION
-from interferer_sampling import (
-    INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION,
-    INTERFERER_RESPONSE_SCHEMA_VERSION,
-)
+from compute_tasks import ViewComputeRequest
 from model_options import SCAN_MODE_LABELS, option_label
-from pattern_sampling import (
-    GREAT_CIRCLE_CUT_SCHEMA_VERSION,
-    PATTERN_CUT_SCHEMA_VERSION,
-    SURFACE_PATTERN_SCHEMA_VERSION,
-    calculate_surface_pattern,
-    scan_surface_sampling,
-)
+from observability import observe_calculation, record_runtime_snapshot
 from resource_policy import ResourcePolicy
 from settings_panel import render_settings_panel
 from simulation import scan_direction
-from simulation_cache import (
-    cached_directivity,
-    cached_great_circle_cuts,
-    cached_interferer_great_circle_cuts,
-    cached_interferer_response_comparisons,
-    cached_pattern_cuts,
-    cached_state,
-    cached_surface_pattern,
-)
+from simulation_cache import cached_view_result
 from ui_elements import render_elements_tab
 from ui_metrics import render_metrics_tab
 from ui_pattern import render_pattern_tab
 from ui_renderers import render_diagnostics
+from ui_summary import render_calculation_summary
 
 RESOURCE_POLICY = ResourcePolicy.from_environment()
 COMPUTE_GOVERNOR = get_compute_governor(RESOURCE_POLICY)
+COMPUTE_EXECUTOR = get_compute_executor(RESOURCE_POLICY)
 
 
 st.set_page_config(page_title="Digital Beamforming Simulator", layout="wide")
@@ -56,6 +41,7 @@ def request_compute_cancel() -> None:
     """Cancel an in-flight lease and suppress the callback-triggered rerun."""
 
     COMPUTE_GOVERNOR.cancel_session(compute_session_id)
+    COMPUTE_EXECUTOR.cancel_session(compute_session_id)
     st.session_state.is_scanning = False
     st.session_state["_skip_next_compute"] = True
 
@@ -85,11 +71,23 @@ st.sidebar.button(
     ),
 )
 compute_snapshot = COMPUTE_GOVERNOR.log_health_if_due()
+executor_snapshot = COMPUTE_EXECUTOR.snapshot()
+record_runtime_snapshot(compute_snapshot, executor_snapshot)
 with st.sidebar.expander("서버 계산 상태", expanded=False):
     st.caption(
         f"동시 계산 {compute_snapshot.active_calculations}/"
         f"{compute_snapshot.max_concurrent_calculations} · "
         f"대기 {compute_snapshot.queued_calculations}"
+    )
+    st.caption(
+        f"실행 백엔드 {executor_snapshot.mode} · Worker "
+        f"{executor_snapshot.worker_count} · 작업 중 {executor_snapshot.inflight_tasks}"
+    )
+    st.caption(
+        f"전역 조정 {compute_snapshot.coordination_backend} · "
+        f"전역 계산 {compute_snapshot.global_active_calculations}/"
+        f"{compute_snapshot.global_max_concurrent_calculations} · "
+        f"상태 {'정상' if compute_snapshot.global_coordination_available else '장애'}"
     )
     st.caption(
         f"프로세스 CPU {compute_snapshot.process_cpu_percent:.1f}% · "
@@ -107,6 +105,13 @@ with st.sidebar.expander("서버 계산 상태", expanded=False):
         f"시간 초과 {compute_snapshot.timed_out_calculations:,} · "
         f"취소 {compute_snapshot.cancelled_calculations:,}"
     )
+
+
+render_calculation_summary(
+    config,
+    scan_mode=scan_mode,
+    scanning=bool(st.session_state.is_scanning),
+)
 
 
 tab_labels = ["📊 빔 패턴 (2D/3D)", "🔍 성능 지표", "🔴 안테나 배치 및 위상"]
@@ -167,90 +172,36 @@ def render_active_result(view_name: str) -> None:
             current_elevation = config.target_elevation_deg
         total_steps = 0
 
+    authenticated_identity = st.context.headers.get("X-Auth-Request-Email")
+    rate_limit_identity = (
+        f"oidc:{authenticated_identity.strip().lower()}"
+        if authenticated_identity
+        else f"session:{compute_session_id}"
+    )
+    task_label = f"{view_name}:{config.geometry}"
     try:
-        with st.spinner("활성 탭 계산 중…", show_time=True):
-            with COMPUTE_GOVERNOR.lease(
-                compute_session_id,
-                f"{view_name}:{config.geometry}",
-            ) as compute_lease:
-                state = cached_state(config, current_azimuth, current_elevation)
-                cuts = None
-                great_circle_cuts = None
-                directivity = None
-                interferer_comparisons = ()
-                interferer_great_circle_cuts = ()
-                surface = None
-                surface_sampling = None
-                if view_name in {"pattern", "metrics"}:
-                    cuts = cached_pattern_cuts(
-                        config,
-                        current_azimuth,
-                        current_elevation,
-                        PATTERN_CUT_SCHEMA_VERSION,
+        with observe_calculation(task_label, executor_snapshot.mode):
+            with st.spinner("활성 탭 계산 중…", show_time=True):
+                with COMPUTE_GOVERNOR.lease(
+                    compute_session_id,
+                    task_label,
+                    rate_limit_identity=rate_limit_identity,
+                ) as compute_lease:
+                    result = cached_view_result(
+                        ViewComputeRequest(
+                            config=config,
+                            current_azimuth_deg=current_azimuth,
+                            current_elevation_deg=current_elevation,
+                            view_name=view_name,
+                            scan_mode=scan_mode,
+                            scanning=scanning,
+                        ),
+                        _executor=COMPUTE_EXECUTOR,
+                        _session_id=compute_session_id,
+                        _timeout_seconds=RESOURCE_POLICY.compute_timeout_seconds,
+                        _cancel_check=compute_lease.check,
                     )
-                    great_circle_cuts = cached_great_circle_cuts(
-                        config,
-                        current_azimuth,
-                        current_elevation,
-                        GREAT_CIRCLE_CUT_SCHEMA_VERSION,
-                    )
-                if view_name == "metrics":
-                    directivity = cached_directivity(
-                        config,
-                        current_azimuth,
-                        current_elevation,
-                        DIRECTIVITY_SCHEMA_VERSION,
-                    )
-                if (
-                    config.enable_null_steering
-                    and view_name in {"pattern", "metrics"}
-                ):
-                    interferer_comparisons = (
-                        cached_interferer_response_comparisons(
-                            config,
-                            current_azimuth,
-                            current_elevation,
-                            INTERFERER_RESPONSE_SCHEMA_VERSION,
-                        )
-                    )
-                if config.enable_null_steering and view_name == "pattern":
-                    interferer_great_circle_cuts = (
-                        cached_interferer_great_circle_cuts(
-                            config,
-                            current_azimuth,
-                            current_elevation,
-                            INTERFERER_GREAT_CIRCLE_SCHEMA_VERSION,
-                        )
-                    )
-                if view_name == "pattern":
-                    surface_sampling = scan_surface_sampling(
-                        state.coordinates.element_count,
-                        scan_mode,
-                        scanning=scanning,
-                    )
-                    if surface_sampling.render_3d:
-                        surface = cached_surface_pattern(
-                            config,
-                            current_azimuth,
-                            current_elevation,
-                            int(surface_sampling.resolution),
-                            int(surface_sampling.local_sample_count),
-                            SURFACE_PATTERN_SCHEMA_VERSION,
-                        )
-                        if (
-                            getattr(surface, "schema_version", 0)
-                            != SURFACE_PATTERN_SCHEMA_VERSION
-                        ):
-                            cached_surface_pattern.clear()
-                            surface = calculate_surface_pattern(
-                                state,
-                                resolution=surface_sampling.resolution,
-                                local_sample_count=(
-                                    surface_sampling.local_sample_count
-                                ),
-                                cancel_check=compute_lease.check,
-                            )
-                compute_lease.check()
+                    compute_lease.check()
     except SessionRateLimitError as error:
         st.warning(
             "이 세션의 계산 요청이 너무 빠릅니다. "
@@ -277,34 +228,48 @@ def render_active_result(view_name: str) -> None:
         st.info("사용자 요청으로 계산과 자동 스캔을 중단했습니다.")
         return
     finally:
-        COMPUTE_GOVERNOR.log_health_if_due()
+        record_runtime_snapshot(
+            COMPUTE_GOVERNOR.log_health_if_due(),
+            COMPUTE_EXECUTOR.snapshot(),
+        )
 
+    state = result.state
     render_diagnostics(state)
     if view_name == "pattern":
-        if cuts is None or great_circle_cuts is None or surface_sampling is None:
+        if (
+            result.cuts is None
+            or result.great_circle_cuts is None
+            or result.surface_sampling is None
+        ):
             raise RuntimeError("Pattern calculation did not produce render data.")
         render_pattern_tab(
             state,
-            cuts,
-            great_circle_cuts,
-            interferer_great_circle_cuts,
+            result.cuts,
+            result.great_circle_cuts,
+            result.interferer_great_circle_cuts,
             coordinate_option=coordinate_option,
             scale_option=scale_option,
             show_band=show_3db,
             show_band_value=show_3db_value,
-            render_3d=surface_sampling.render_3d,
-            surface=surface,
-            surface_quality=surface_sampling.quality,
+            render_3d=result.surface_sampling.render_3d,
+            surface=result.surface,
+            surface_quality=result.surface_sampling.quality,
         )
     elif view_name == "metrics":
-        if cuts is None or great_circle_cuts is None or directivity is None:
+        if (
+            result.cuts is None
+            or result.great_circle_cuts is None
+            or result.directivity is None
+        ):
             raise RuntimeError("Metric calculation did not produce pattern cuts.")
         render_metrics_tab(
             state,
-            cuts,
-            great_circle_cuts,
-            directivity,
-            interferer_comparisons,
+            result.cuts,
+            result.great_circle_cuts,
+            result.directivity,
+            result.interferer_comparisons,
+            result.advanced_analysis,
+            result.golden_validation,
         )
     else:
         render_elements_tab(state)

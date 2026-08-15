@@ -11,6 +11,7 @@ HARD_MAX_DIRECTIVITY_EXACT_ELEMENTS = 4_096
 HARD_MAX_SCAN_FRAMES = 1_000
 HARD_MAX_SCAN_ELEMENT_FRAMES = 4_000_000
 HARD_MAX_CONCURRENT_CALCULATIONS = 32
+HARD_MAX_GLOBAL_CONCURRENT_CALCULATIONS = 128
 HARD_MAX_COMPUTE_SECONDS = 120.0
 HARD_MAX_SESSION_CALCULATIONS_PER_MINUTE = 600
 HARD_MAX_SESSION_BURST = 60
@@ -58,6 +59,7 @@ class ResourcePolicy:
     max_scan_frames: int = 400
     max_scan_element_frames: int = 1_000_000
     max_concurrent_calculations: int = 2
+    global_max_concurrent_calculations: int = 4
     compute_queue_timeout_seconds: float = 1.0
     compute_timeout_seconds: float = 10.0
     session_calculations_per_minute: int = 120
@@ -116,6 +118,11 @@ class ResourcePolicy:
                 "DBF_MAX_CONCURRENT_CALCULATIONS",
                 cls.max_concurrent_calculations,
                 HARD_MAX_CONCURRENT_CALCULATIONS,
+            ),
+            global_max_concurrent_calculations=_bounded_environment_int(
+                "DBF_GLOBAL_MAX_CONCURRENT_CALCULATIONS",
+                cls.global_max_concurrent_calculations,
+                HARD_MAX_GLOBAL_CONCURRENT_CALCULATIONS,
             ),
             compute_queue_timeout_seconds=_bounded_environment_float(
                 "DBF_COMPUTE_QUEUE_TIMEOUT_SECONDS",

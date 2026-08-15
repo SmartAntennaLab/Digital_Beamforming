@@ -1,0 +1,26 @@
+# Copy outside the repository, replace every example value, and restrict permissions.
+provider = "oidc"
+provider_display_name = "Company SSO"
+oidc_issuer_url = "https://login.example.com/realms/company"
+redirect_url = "https://beamforming.example.com/oauth2/callback"
+client_id = "digital-beamforming"
+client_secret = "replace-from-secret-manager"
+
+http_address = "127.0.0.1:4180"
+upstreams = ["static://202"]
+reverse_proxy = true
+set_xauthrequest = true
+skip_provider_button = true
+email_domains = ["example.com"]
+scope = "openid profile email groups"
+
+cookie_name = "__Host-dbf_oidc"
+cookie_secret = "replace-with-32-byte-base64url-secret"
+cookie_secure = true
+cookie_httponly = true
+cookie_samesite = "lax"
+cookie_refresh = "14m"
+cookie_expire = "8h"
+
+session_store_type = "redis"
+redis_connection_url = "redis://127.0.0.1:6379/1"

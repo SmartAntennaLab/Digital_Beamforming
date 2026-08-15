@@ -47,7 +47,11 @@ def render_scan_controls(
     horizontal_count: int,
     steering_limits: SteeringLimits,
 ) -> ScanControlsResult:
-    with st.sidebar.expander("📡 자동 빔 스캔", expanded=False):
+    with st.sidebar.expander(
+        "6. 고급 계산·스캔 — 자동 빔 스캔",
+        expanded=False,
+        icon=":material/radar:",
+    ):
         with st.form("scan_settings", border=False):
             azimuth_range = st.slider(
                 "Azimuth 스캔 범위 (°)",
@@ -161,7 +165,8 @@ def render_scan_controls(
             )
             scan_buttons = st.columns(2)
             start_scan = scan_buttons[0].form_submit_button(
-                "▶️ 시작",
+                "시작",
+                icon=":material/play_arrow:",
                 disabled=st.session_state.is_scanning
                 or not (
                     steering_limits.azimuth_controllable
@@ -171,7 +176,8 @@ def render_scan_controls(
                 on_click=request_device_settings_save,
             )
             stop_scan = scan_buttons[1].form_submit_button(
-                "⏹️ 중지",
+                "중지",
+                icon=":material/stop:",
                 disabled=not st.session_state.is_scanning,
                 width="stretch",
                 on_click=request_device_settings_save,

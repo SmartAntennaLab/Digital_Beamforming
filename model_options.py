@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TypeVar
+
+OptionT = TypeVar("OptionT")
 
 GEOMETRY_LABELS: dict[str, str] = {
     "UPA": "UPA (사각형 평면형)",
@@ -65,7 +68,7 @@ SCAN_MODE_OPTIONS = tuple(SCAN_MODE_LABELS)
 NULL_OPTIMIZATION_MODE_OPTIONS = tuple(NULL_OPTIMIZATION_MODE_LABELS)
 
 
-def option_label(value: object, labels: Mapping[object, str]) -> str:
+def option_label(value: OptionT, labels: Mapping[OptionT, str]) -> str:
     """Return a UI label for one stable option ID."""
 
     return labels.get(value, str(value))

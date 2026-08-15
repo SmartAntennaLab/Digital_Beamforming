@@ -22,7 +22,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(list(self.app.exception), [])
         self.assertEqual(len(self.app.get("plotly_chart")), 0)
         self.assertEqual(len(self.app.metric), 13)
-        self.assertEqual(len(self.app.download_button), 2)
+        self.assertEqual(len(self.app.download_button), 4)
         performance_metrics = {item.label: item.value for item in self.app.metric}
         self.assertIn("상대 배열 이득", performance_metrics)
         self.assertTrue(performance_metrics["상대 배열 이득"].endswith(" dB"))
@@ -58,19 +58,69 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
             "1.500 λ / 1.606 cm",
         )
 
-    def test_null_metrics_expose_svd_residual_and_weight_diagnostics(self):
-        null_checkbox = next(
-            item for item in self.app.checkbox if item.label == "영점 조향 활성화"
+    def test_staged_settings_hide_null_inputs_until_enabled(self):
+        self.assertTrue(
+            any(item.value == "**입력 영역 제어**" for item in self.app.markdown)
         )
-        apply_button = next(
+        self.assertFalse(
+            any(item.label.startswith("간섭") for item in self.app.slider)
+        )
+        self.assertFalse(
+            any(item.label == "간섭원 수" for item in self.app.number_input)
+        )
+        summary = "\n".join(item.value for item in self.app.markdown)
+        self.assertIn("현재 계산 조건", summary)
+        self.assertIn("**Null** 사용 안 함", summary)
+        self.assertTrue(
+            any("계산 모드 · Directivity" in item.value for item in self.app.caption)
+        )
+
+        next(
+            item for item in self.app.toggle if item.label == "영점 조향 활성화"
+        ).set_value(True)
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertTrue(self.app.session_state["_draft_enable_null"])
+        self.assertFalse(self.app.session_state["enable_null"])
+        self.assertTrue(
+            any(item.label == "간섭 Azimuth 각도 (°)" for item in self.app.slider)
+        )
+        self.assertTrue(
+            any(item.label == "간섭원 수" for item in self.app.number_input)
+        )
+        self.assertTrue(
+            any("변경 대기 중" in item.value for item in self.app.caption)
+        )
+        summary = "\n".join(item.value for item in self.app.markdown)
+        self.assertIn("**Null** 사용 안 함", summary)
+
+        next(
             item for item in self.app.button if item.label == "설정 적용 및 계산"
+        ).click()
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
+        self.assertTrue(self.app.session_state["enable_null"])
+        summary = "\n".join(item.value for item in self.app.markdown)
+        self.assertIn("**Null** 간섭원 1개", summary)
+
+    def test_null_metrics_expose_svd_residual_and_weight_diagnostics(self):
+        null_toggle = next(
+            item for item in self.app.toggle if item.label == "영점 조향 활성화"
         )
-        null_checkbox.set_value(True)
+        null_toggle.set_value(True)
+        self.app.run()
+
+        self.assertEqual(list(self.app.exception), [])
         next(
             item
             for item in self.app.slider
             if item.label == "간섭 Azimuth 각도 (°)"
         ).set_value(20.0)
+        apply_button = next(
+            item for item in self.app.button if item.label == "설정 적용 및 계산"
+        )
         apply_button.click()
         self.app.run()
 
@@ -98,6 +148,11 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(len(self.app.dataframe), 1)
 
     def test_multiple_null_ui_reports_requirements_and_saturation(self):
+        next(
+            item for item in self.app.toggle if item.label == "영점 조향 활성화"
+        ).set_value(True)
+        self.app.run()
+
         null_count = next(
             item for item in self.app.number_input if item.label == "간섭원 수"
         )
@@ -111,9 +166,6 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
             any(item.label == "간섭원 2 요구 억압량 (dB)" for item in self.app.slider)
         )
 
-        next(
-            item for item in self.app.checkbox if item.label == "영점 조향 활성화"
-        ).set_value(True)
         next(
             item
             for item in self.app.slider
@@ -274,6 +326,11 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         )
 
     def test_vertical_controls_disable_immediately_for_ula_and_uca(self):
+        next(
+            item for item in self.app.toggle if item.label == "영점 조향 활성화"
+        ).set_value(True)
+        self.app.run()
+
         def geometry_widget():
             return next(
                 item for item in self.app.selectbox if item.label == "안테나 배열 형상"
@@ -358,7 +415,6 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
             "수평 안테나 수 (N)": 32,
             "수평 소자 간격 (dy/λ)": 0.65,
             "목표 Elevation 각도 (°)": 0.0,
-            "간섭 Elevation 각도 (°)": 0.0,
         }
         actual_sliders = {
             item.label: item.value
@@ -366,6 +422,9 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
             if item.label in expected_sliders
         }
         self.assertEqual(actual_sliders, expected_sliders)
+        self.assertFalse(
+            any(item.label.startswith("간섭") for item in restored.slider)
+        )
         self.assertTrue(
             next(
                 item.disabled
@@ -376,7 +435,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(
             next(
                 item.value
-                for item in restored.radio
+                for item in restored.segmented_control
                 if item.label == "3D 빔 패턴 스케일"
             ),
             "linear",
@@ -422,6 +481,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
                         "frequency_ghz": 12.0,
                         "uha_max_count": 5,
                         "uha_min_count": 2,
+                        "enable_null": True,
                         "null_count": 2,
                     }
                 )
@@ -487,6 +547,7 @@ class StreamlitPerformanceArchitectureTests(unittest.TestCase):
         )
         self.assertEqual(dict(self.app.query_params), {})
         self.assertEqual(self.app.session_state["null_count"], 1)
+        self.assertFalse(self.app.session_state["_draft_enable_null"])
         self.assertEqual(self.app.session_state["_draft_null_count"], 1)
         self.assertEqual(
             self.app.session_state["_device_storage_command"]["action"],

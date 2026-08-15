@@ -29,7 +29,7 @@ from model_options import (
     normalize_option_id,
 )
 
-DEVICE_SETTINGS_SCHEMA_VERSION = 6
+DEVICE_SETTINGS_SCHEMA_VERSION = 7
 DEVICE_STORAGE_KEY = "digital_beamforming.settings.v1"
 
 DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
@@ -69,6 +69,28 @@ DEFAULT_DEVICE_SETTINGS: dict[str, object] = {
     "scan_elevation_steps": 5,
     "scan_delay": 0.2,
     "scan_mode": "preview_3d",
+    "random_seed": 42,
+    "position_error_rms_wavelength": 0.0,
+    "amplitude_error_rms_db": 0.0,
+    "phase_error_rms_deg": 0.0,
+    "enable_mutual_coupling": False,
+    "mutual_coupling_db": -30.0,
+    "mutual_coupling_phase_deg": 0.0,
+    "polarization_angle_deg": 0.0,
+    "wideband_bandwidth_percent": 0.0,
+    "wideband_frequency_samples": 7,
+    "enable_near_field_focus": False,
+    "near_field_focus_range_m": 1.0,
+    "enable_channel_analysis": False,
+    "channel_snapshots": 128,
+    "multipath_count": 0,
+    "signal_power_dbm": 0.0,
+    "interference_power_dbm": -10.0,
+    "noise_power_dbm": -30.0,
+    "adaptive_beamforming_method": "none",
+    "diagonal_loading": 1e-3,
+    "enable_doa_estimation": False,
+    "golden_dataset_source": "matlab",
 }
 
 for null_index, default_azimuth in enumerate(
@@ -199,6 +221,28 @@ SETTING_VALIDATORS: dict[str, Callable[[object], object]] = {
     "scan_elevation_steps": _bounded_int(2, 20),
     "scan_delay": _finite_float(0.1, 2.0),
     "scan_mode": _option(SCAN_MODE_LABELS),
+    "random_seed": _bounded_int(0, 4_294_967_295),
+    "position_error_rms_wavelength": _finite_float(0.0, 0.2),
+    "amplitude_error_rms_db": _finite_float(0.0, 6.0),
+    "phase_error_rms_deg": _finite_float(0.0, 60.0),
+    "enable_mutual_coupling": _boolean,
+    "mutual_coupling_db": _finite_float(-60.0, -6.0),
+    "mutual_coupling_phase_deg": _finite_float(-180.0, 180.0),
+    "polarization_angle_deg": _finite_float(-90.0, 90.0),
+    "wideband_bandwidth_percent": _finite_float(0.0, 40.0),
+    "wideband_frequency_samples": _bounded_int(3, 33),
+    "enable_near_field_focus": _boolean,
+    "near_field_focus_range_m": _finite_float(0.01, 100_000.0),
+    "enable_channel_analysis": _boolean,
+    "channel_snapshots": _bounded_int(16, 1024),
+    "multipath_count": _bounded_int(0, 8),
+    "signal_power_dbm": _finite_float(-120.0, 60.0),
+    "interference_power_dbm": _finite_float(-120.0, 60.0),
+    "noise_power_dbm": _finite_float(-180.0, 60.0),
+    "adaptive_beamforming_method": _choice(("none", "mvdr", "lcmv")),
+    "diagonal_loading": _finite_float(1e-6, 1.0),
+    "enable_doa_estimation": _boolean,
+    "golden_dataset_source": _choice(("matlab", "measurement", "other")),
 }
 
 for null_index in range(2, 9):
@@ -216,7 +260,7 @@ def sanitize_device_settings(settings: object) -> dict[str, object]:
         return {}
     if "settings" in settings:
         version = settings.get("schema_version")
-        if version not in {1, 2, 3, 4, 5, DEVICE_SETTINGS_SCHEMA_VERSION}:
+        if version not in {1, 2, 3, 4, 5, 6, DEVICE_SETTINGS_SCHEMA_VERSION}:
             return {}
         settings = settings.get("settings")
         if not isinstance(settings, Mapping):

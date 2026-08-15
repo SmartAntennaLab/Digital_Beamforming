@@ -8,12 +8,15 @@ import streamlit as st
 
 from directivity import DirectivityResult
 from exporters import build_export_artifacts
+from golden_validation import GoldenValidationResult
 from interferer_sampling import InterfererResponseComparison
 from pattern_sampling import (
     GreatCircleCuts,
     PatternCuts,
 )
+from signal_processing import AdvancedAnalysis
 from simulation import SimulationState
+from ui_advanced_metrics import render_advanced_metrics
 from ui_formatters import (
     format_absolute_residual,
     format_angle_metric,
@@ -33,6 +36,8 @@ def render_metrics_tab(
     great_circle_cuts: GreatCircleCuts,
     directivity: DirectivityResult,
     interferer_comparisons: tuple[InterfererResponseComparison, ...],
+    advanced_analysis: AdvancedAnalysis | None = None,
+    golden_validation: GoldenValidationResult | None = None,
 ) -> None:
     st.subheader("📏 주요 성능 지표 (AESA Performance Metrics)")
     gain = state.gain_metrics
@@ -80,7 +85,7 @@ def render_metrics_tab(
 
     weight_result = state.weight_result
     actual_null_depth = (
-        weight_result.null_depths_db[0] if weight_result.null_depths_db else None
+        state.realized_null_depths_db[0] if state.realized_null_depths_db else None
     )
     continuous_null_depth = (
         weight_result.continuous_null_depths_db[0]
@@ -240,7 +245,9 @@ def render_metrics_tab(
                         if weight_result.phase_quantization_applied
                         else "미적용"
                     ),
-                    "최종 Null 깊이": format_depth(weight_result.null_depths_db[index]),
+                    "최종 Null 깊이": format_depth(
+                        state.realized_null_depths_db[index]
+                    ),
                 }
             )
         if null_rows:
@@ -347,6 +354,7 @@ def render_metrics_tab(
         f"목표 U={directivity.target_radiation_intensity:.6g}."
     )
 
+    render_advanced_metrics(state, advanced_analysis, golden_validation)
     export_artifacts = build_export_artifacts(
         state,
         cuts,
@@ -355,13 +363,15 @@ def render_metrics_tab(
     )
     st.divider()
     st.subheader("💾 데이터 내보내기")
-    download_columns = st.columns(2)
+    download_columns = st.columns(4)
     download_columns[0].download_button(
         "📊 2D 빔 패턴 CSV 다운로드",
         export_artifacts.pattern_csv,
         file_name="beam_pattern_data.csv",
         mime="text/csv",
         width="stretch",
+        icon=":material/table_view:",
+        on_click="ignore",
     )
     download_columns[1].download_button(
         "📄 설계 리포트 다운로드",
@@ -369,6 +379,26 @@ def render_metrics_tab(
         file_name="beamforming_design_report.md",
         mime="text/markdown",
         width="stretch",
+        icon=":material/description:",
+        on_click="ignore",
+    )
+    download_columns[2].download_button(
+        "설정 JSON",
+        export_artifacts.settings_json,
+        file_name="simulation_settings.json",
+        mime="application/json",
+        width="stretch",
+        icon=":material/data_object:",
+        on_click="ignore",
+    )
+    download_columns[3].download_button(
+        "재현성 패키지",
+        export_artifacts.reproducibility_zip,
+        file_name="beamforming_reproducibility.zip",
+        mime="application/zip",
+        width="stretch",
+        icon=":material/folder_zip:",
+        on_click="ignore",
     )
 
 

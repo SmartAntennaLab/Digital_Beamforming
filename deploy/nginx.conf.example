@@ -1,5 +1,5 @@
-# Replace domain and certificate paths before deployment. Create the password
-# file outside the repository: htpasswd -c /etc/nginx/dbf.htpasswd <user>
+# Replace domain, certificate paths, and upstream replica addresses. Authentication
+# is delegated to oauth2-proxy, which validates the configured OIDC provider.
 
 events {}
 
@@ -13,8 +13,16 @@ http {
     limit_conn_zone $binary_remote_addr zone=dbf_connections:10m;
 
     upstream digital_beamforming {
+        least_conn;
         server 127.0.0.1:8501;
+        # Add more Streamlit replicas when required:
+        # server 127.0.0.1:8502;
         keepalive 16;
+    }
+
+    upstream oauth2_proxy {
+        server 127.0.0.1:4180;
+        keepalive 8;
     }
 
     server {
@@ -31,9 +39,6 @@ http {
         ssl_certificate /etc/letsencrypt/live/beamforming.example.com/fullchain.pem;
         ssl_certificate_key /etc/letsencrypt/live/beamforming.example.com/privkey.pem;
 
-        auth_basic "Digital beamforming";
-        auth_basic_user_file /etc/nginx/dbf.htpasswd;
-
         add_header X-Content-Type-Options nosniff always;
         add_header Referrer-Policy strict-origin-when-cross-origin always;
         add_header Strict-Transport-Security "max-age=31536000" always;
@@ -41,15 +46,52 @@ http {
         limit_req_status 429;
         limit_conn_status 429;
 
-        location = /_stcore/health {
+        location = /healthz {
             allow 127.0.0.1;
             allow ::1;
             deny all;
-            auth_basic off;
             proxy_pass http://digital_beamforming;
         }
 
+        location = /readyz {
+            allow 127.0.0.1;
+            allow ::1;
+            deny all;
+            proxy_pass http://digital_beamforming;
+        }
+
+        location = /metrics {
+            allow 127.0.0.1;
+            allow ::1;
+            # Add the Prometheus collector network before production rollout.
+            deny all;
+            proxy_pass http://digital_beamforming;
+        }
+
+        location /oauth2/ {
+            proxy_pass http://oauth2_proxy;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Auth-Request-Redirect $scheme://$host$request_uri;
+        }
+
+        location = /oauth2/auth {
+            proxy_pass http://oauth2_proxy;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-Original-URI $request_uri;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Host $host;
+        }
+
         location / {
+            auth_request /oauth2/auth;
+            error_page 401 = /oauth2/sign_in;
+            auth_request_set $auth_user $upstream_http_x_auth_request_user;
+            auth_request_set $auth_email $upstream_http_x_auth_request_email;
+
             limit_req zone=dbf_per_ip burst=10 nodelay;
             limit_conn dbf_connections 3;
 
@@ -61,6 +103,8 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Auth-Request-User $auth_user;
+            proxy_set_header X-Auth-Request-Email $auth_email;
             proxy_buffering off;
             proxy_read_timeout 60s;
             proxy_send_timeout 60s;
